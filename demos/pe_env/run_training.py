@@ -22,7 +22,7 @@ from demos.pe_env.train_pomdp import train, TrainConfig
 NEW_REWARD_DEFAULTS = {
     # --- 奖励 ---
     "lambert_reward_weight": 0.05,
-    "reward_dist_weight": 0.1,      # 稍微降低距离权重，避免过度贪婪
+    "reward_dist_weight": 0.01,   
     "reward_time_weight": 0.03,
     "reward_formation_weight": 0.04,
     "reward_fuel_weight": 0.03,     # [重要] 单步燃料惩罚 
@@ -78,13 +78,12 @@ def main():
 
     # --- 算法超参数 ---
     algo_parser.add_argument("--lr", type=float, default=TrainConfig.lr, help="Actor-Critic网络的学习率")
-    algo_parser.add_argument("--sl_lr", type=float, default=TrainConfig.sl_lr, help="监督学习(LSTM)的学习率")
     algo_parser.add_argument("--gamma", type=float, default=TrainConfig.gamma, help="折扣因子")
     algo_parser.add_argument("--gae_lambda", type=float, default=TrainConfig.gae_lambda, help="GAE的lambda参数")
     algo_parser.add_argument("--clip_coef", type=float, default=TrainConfig.clip_coef, help="PPO的裁剪系数")
     algo_parser.add_argument("--ent_coef", type=float, default=TrainConfig.ent_coef, help="熵损失的系数")
     algo_parser.add_argument("--vf_coef", type=float, default=TrainConfig.vf_coef, help="值函数损失的系数")
-    algo_parser.add_argument("--sl_coef", type=float, default=TrainConfig.sl_coef, help="监督学习损失的权重")
+    algo_parser.add_argument("--distil_coef", type=float, default=TrainConfig.distil_coef, help="蒸馏损失的权重")
     algo_parser.add_argument("--anneal_ent", type=lambda x: (str(x).lower() == 'true'), default=TrainConfig.anneal_ent, help="是否对熵系数进行退火")
     algo_parser.add_argument("--ent_anneal_start_frac", type=float, default=TrainConfig.ent_anneal_start_frac, help="熵系数退火起始点 (占总训练步数的百分比)")
     algo_parser.add_argument("--final_ent_coef", type=float, default=TrainConfig.final_ent_coef, help="熵系数退火的最终目标值")
@@ -160,12 +159,11 @@ def main():
     train_cfg.clip_coef = args.clip_coef
     train_cfg.ent_coef = args.ent_coef
     train_cfg.vf_coef = args.vf_coef
-    train_cfg.sl_coef = args.sl_coef
+    train_cfg.distil_coef = args.distil_coef
     train_cfg.anneal_ent = args.anneal_ent
     train_cfg.ent_anneal_start_frac = args.ent_anneal_start_frac
     train_cfg.final_ent_coef = args.final_ent_coef
     train_cfg.lr = args.lr
-    train_cfg.sl_lr = args.sl_lr
     train_cfg.num_mini_batches = args.num_mini_batches
     train_cfg.update_epochs = args.update_epochs
     train_cfg.total_timesteps = args.total_timesteps

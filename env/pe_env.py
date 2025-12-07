@@ -132,30 +132,9 @@ class PEEnv(ParallelEnv):
         # 渲染器将在第一次调用render()时被初始化
         self.viewer = None
 
-    def update_curriculum(self, current_update: int):
-        """
-        由训练循环调用，以更新基于课程学习的参数。
-        此方法为SMA扰动实现线性增长。
-        """
-        start = self._config.sma_perturb_start_update
-        end = self._config.sma_perturb_end_update
-        max_perturb = self._config.sma_perturb_km_max
-
-        if current_update < start:
-            new_perturb = 0.0
-        elif current_update >= end:
-            new_perturb = max_perturb
-        else:
-            # 线性插值
-            progress = (current_update - start) / (end - start)
-            new_perturb = progress * max_perturb
-        
-        # 仅当数值变化时打印提示信息
-        if new_perturb > 0 and self.current_sma_perturb_km == 0.0:
-             print(f"\n*** 课程学习: 更新 {current_update}, 开始SMA扰动线性增长。 ***")
-        
-        if new_perturb > self.current_sma_perturb_km:
-            self.current_sma_perturb_km = new_perturb
+    def set_sma_perturb(self, perturb_km: float):
+        """从外部设置SMA扰动值"""
+        self.current_sma_perturb_km = perturb_km
 
     def reset(self, seed=None, options=None):
         # 若开启固定场景调试，则重置随机种子
