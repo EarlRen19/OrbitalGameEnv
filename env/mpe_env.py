@@ -73,59 +73,63 @@ class MPEEnv(PEEnv):
     def observe(self, agent):
         return self._get_observations().get(agent)
 
+    @staticmethod
+    def _symlog(x):
+        """对称对数函数，用于归一化，处理大范围数值。"""
+        return np.sign(x) * np.log(np.abs(x) + 1.0)
+
     def _get_observations(self):
         observations = {}
         
-        # 收集所有智能体位置信息
-        all_positions = {}
-        for agent_id in self.possible_agents:
-            if agent_id in self.states:
-                all_positions[agent_id] = self.states[agent_id][:3]
+        # 收集所有智能体的完整状态
+        all_states_dict = {aid: self.states[aid] for aid in self.possible_agents if aid in self.states}
         
         # 为每个智能体构建观测
         for agent_id in self.possible_agents:
-            if agent_id not in self.states:
+            if agent_id not in all_states_dict:
                 continue
                 
             if agent_id.startswith('p_'):  # 追击方
                 obs_components = []
+                my_state = all_states_dict[agent_id]
+                my_pos = my_state[:3]
                 
-                # 1. 自身状态（6维）
-                obs_components.append(self.states[agent_id])
+                # 1. 自身状态（6维）- 应用symlog
+                obs_components.append(self._symlog(my_state))
                 
-                # 2. 所有逃逸方绝对位置（3*num_e维）
-                evader_positions = []
+                # 2. 所有逃逸方相对位置（3*num_e维）- 先计算相对位置，再symlog
+                evader_rel_positions = []
                 for i in range(self._config.num_e):
                     evader_id = f'e_{i}'
-                    if evader_id in all_positions:
-                        evader_positions.append(all_positions[evader_id])
+                    if evader_id in all_states_dict:
+                        evader_pos = all_states_dict[evader_id][:3]
+                        rel_pos = evader_pos - my_pos
+                        evader_rel_positions.append(self._symlog(rel_pos))
+                    else:
+                        # 如果逃逸者不存在，用零填充
+                        evader_rel_positions.append(np.zeros(3))
                 
-                if evader_positions:
-                    obs_components.append(np.concatenate(evader_positions))
-                else:
-                    # 如果没有逃方，添加零向量以保持维度一致
-                    obs_components.append(np.zeros(3 * self._config.num_e))
+                obs_components.append(np.concatenate(evader_rel_positions))
                 
-                # 3. 其他追击方相对位置（3*(num_p-1)维）
+                # 3. 其他追击方相对位置（3*(num_p-1)维）- 先计算相对位置，再symlog
                 other_pursuer_rel_positions = []
-                current_pos = all_positions[agent_id]
-                
                 for i in range(self._config.num_p):
                     pursuer_id = f'p_{i}'
-                    if pursuer_id != agent_id and pursuer_id in all_positions:
-                        rel_pos = all_positions[pursuer_id] - current_pos
-                        other_pursuer_rel_positions.append(rel_pos)
-                
-                # 处理没有其他追击方的情况
-                if other_pursuer_rel_positions:
+                    if pursuer_id != agent_id:
+                        if pursuer_id in all_states_dict:
+                            pursuer_pos = all_states_dict[pursuer_id][:3]
+                            rel_pos = pursuer_pos - my_pos
+                            other_pursuer_rel_positions.append(self._symlog(rel_pos))
+                        else:
+                            # 如果队友不存在，用零填充
+                            other_pursuer_rel_positions.append(np.zeros(3))
+
+                if self._config.num_p > 1:
                     obs_components.append(np.concatenate(other_pursuer_rel_positions))
-                else:
-                    # 如果没有其他追击者，添加一个零向量以保持维度一致
-                    obs_components.append(np.zeros(3 * (self._config.num_p - 1)))
 
                 observations[agent_id] = np.concatenate(obs_components)
-            else:  # 逃方
-                observations[agent_id] = self.states[agent_id]
+            else:  # 逃方 - 保持绝对坐标的symlog
+                observations[agent_id] = self._symlog(all_states_dict[agent_id])
         
         return observations
 

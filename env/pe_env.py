@@ -284,6 +284,11 @@ class PEEnv(ParallelEnv):
             self.viewer.close()
             self.viewer = None
     
+    @staticmethod
+    def _symlog(x):
+        """对称对数函数，用于归一化，处理大范围数值。"""
+        return np.sign(x) * np.log(np.abs(x) + 1.0)
+
     def observation_space(self, agent):
         return self.observation_spaces[agent]
 
@@ -292,23 +297,35 @@ class PEEnv(ParallelEnv):
 
     def _get_observations(self):
         observations = {}
-        evader_positions = []
-        for i in range(self._config.num_e):
-            evader_id = f'e_{i}'
-            if evader_id in self.states:
-                evader_positions.append(self.states[evader_id][:3])
         
         for agent_id in self.possible_agents: 
             if agent_id not in self.states:
                 continue 
 
             if agent_id.startswith('p_'):
+                my_state = self.states[agent_id]
+                my_pos = my_state[:3]
+                
+                # 计算所有逃逸者的相对位置
+                evader_rel_positions = []
+                for i in range(self._config.num_e):
+                    evader_id = f'e_{i}'
+                    if evader_id in self.states:
+                        evader_pos = self.states[evader_id][:3]
+                        rel_pos = evader_pos - my_pos
+                        evader_rel_positions.append(self._symlog(rel_pos))
+                    else:
+                        # 如果逃逸者不存在，用零填充
+                        evader_rel_positions.append(np.zeros(3))
+
+                # 拼接：自身的绝对状态(symlog) + 逃逸者的相对位置(symlog)
                 obs = np.concatenate([
-                    self.states[agent_id],
-                    np.concatenate(evader_positions) if evader_positions else np.array([])
+                    self._symlog(my_state),
+                    np.concatenate(evader_rel_positions) if evader_rel_positions else np.array([])
                 ])
-            else:
-                obs = self.states[agent_id]
+            else: # Evader
+                # 逃逸者观测仍然是自身的绝对状态(symlog)
+                obs = self._symlog(self.states[agent_id])
             observations[agent_id] = obs
         
         return observations

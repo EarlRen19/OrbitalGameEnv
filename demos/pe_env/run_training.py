@@ -22,10 +22,10 @@ from demos.pe_env.train_pomdp import train, TrainConfig
 NEW_REWARD_DEFAULTS = {
     # --- 奖励 ---
     "lambert_reward_weight": 0.05,
-    "reward_dist_weight": 0.01,   
+    "reward_dist_weight": 0.1,   
     "reward_time_weight": 0.03,
     "reward_formation_weight": 0.04,
-    "reward_fuel_weight": 0.03,     # [重要] 单步燃料惩罚 
+    "reward_fuel_weight": 0.05,     # [重要] 单步燃料惩罚 
     "reward_advantage_weight": 0.002,
     "capture_reward": 30.0,         # 适当提高成功奖励，保持正负激励平衡
     "reward_timeout_penalty": -12,   # 超时也给惩罚，迫使它在省油和快速之间权衡
@@ -61,9 +61,7 @@ def main():
 
     # --- 模型结构配置 ---
     model_parser.add_argument("--use_encoder", type=lambda x: (str(x).lower() == 'true'), default=TrainConfig.use_encoder, help="是否在Actor网络中使用Attention Encoder")
-    model_parser.add_argument("--lstm_history_len", type=int, default=MPE_POMDP_EnvCfg.lstm_history_len, help="LSTM输入序列的历史长度")
-    model_parser.add_argument("--lstm_future_len", type=int, default=MPE_POMDP_EnvCfg.lstm_future_len, help="LSTM需要预测的未来轨迹长度")
-    model_parser.add_argument("--lstm_scheme", type=int, default=1, choices=[1, 2, 3], help="LSTM预测方案 (1: rel-to-last, 2: rel-to-virtual-star, 3: rel-to-first)")
+    model_parser.add_argument("--history_len", type=int, default=MPE_POMDP_EnvCfg.history_len, help="Transformer输入序列的历史长度")
 
     # --- 奖励权重配置 ---
     reward_parser.add_argument("--lambert_reward_weight", type=float, default=NEW_REWARD_DEFAULTS.get('lambert_reward_weight', MPE_POMDP_EnvCfg.lambert_reward_weight), help="引导奖励：Lambert引导奖励的权重")
@@ -116,7 +114,8 @@ def main():
     misc_parser.add_argument("--debug_rewards", type=lambda x: (str(x).lower() == 'true'), default=False, help="是否打印每一步详细的奖励构成")
     misc_parser.add_argument("--debug_critic", type=lambda x: (str(x).lower() == 'true'), default=False, help="是否打印Critic诊断信息")
     misc_parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="从指定的检查点文件路径恢复训练")
-    misc_parser.add_argument("--use-fixed-reset", type=lambda x: (str(x).lower() == 'true'), default=MPEEnvCfg.use_fixed_seed_for_reset, help="[调试] 若为True, 则每回合都从固定的初始位置开始")
+    misc_parser.add_argument("--use-fixed-reset", dest="use_fixed_seed_for_reset", type=lambda x: (str(x).lower() == 'true'), default=MPEEnvCfg.use_fixed_seed_for_reset, help="[调试] 若为True, 则每回合都从固定的初始位置开始")
+    misc_parser.add_argument("--debug_observation", type=lambda x: (str(x).lower() == 'true'), default=False, help="每隔200步打印p0的详细观测和网络输入")
 
     args = parser.parse_args()
 
@@ -128,11 +127,9 @@ def main():
     env_cfg.e_init_dist_max_offset = args.e_init_dist_max_offset
     env_cfg.use_partial_obs = args.use_partial_obs
     env_cfg.obs_interval = args.obs_interval
-    env_cfg.lstm_history_len = args.lstm_history_len
-    env_cfg.lstm_future_len = args.lstm_future_len
+    env_cfg.history_len = args.history_len # 使用新的参数
     env_cfg.use_lambert_reward = args.use_lambert_reward
-    env_cfg.lstm_scheme = args.lstm_scheme
-    env_cfg.use_fixed_seed_for_reset = args.use_fixed_reset
+    env_cfg.use_fixed_seed_for_reset = args.use_fixed_seed_for_reset
     env_cfg.evader_policy_level = args.evader_policy_level
     env_cfg.e_dv_step = args.e_dv_step
     # Curriculum
@@ -181,6 +178,7 @@ def main():
     train_cfg.seed = args.seed
     train_cfg.device = args.device
     train_cfg.debug_critic = args.debug_critic
+    train_cfg.debug_observation = args.debug_observation
     train_cfg.resume_from_checkpoint = args.resume_from_checkpoint
     if args.run_name:
         train_cfg.run_name = args.run_name

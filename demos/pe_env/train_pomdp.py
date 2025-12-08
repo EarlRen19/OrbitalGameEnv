@@ -1,5 +1,6 @@
 import sys
 import os
+import math
 
 # 将项目根目录添加到Python路径中
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -46,48 +47,78 @@ class TrainConfig:
     p_init_dv_decrement: float = 100.0
     min_dist_cap: float = 30e3
     min_p_init_dv: float = 200.0
-    debug_critic: bool = False 
+    debug_critic: bool = False
+    debug_observation: bool = False
     resume_from_checkpoint: str = None
     checkpoint_interval: int = 50
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    run_name: str = f"mpe_distil_{int(time.time())}"
+    run_name: str = f"mpe_transformer_distil_{int(time.time())}"
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 50):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+        """
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
+
 class ActorCritic(nn.Module):
-    """非对称Actor-Critic，包含Teacher-Student蒸馏"""
-    def __init__(self, student_obs_dim, privileged_obs_dim, act_dim, env_cfg, train_cfg):
+    """非对称Actor-Critic，学生网络使用Transformer处理历史轨迹"""
+    def __init__(self, student_obs_dim, privileged_obs_dim, act_dim, env_cfg: MPE_POMDP_EnvCfg, train_cfg: TrainConfig):
         super().__init__()
         self.use_encoder = train_cfg.use_encoder
         
-        lstm_feature_dim = 128
+        # Transformer配置
+        d_model = 128  # Transformer的特征维度
+        history_input_dim = 6 # 历史轨迹中每个时间步的维度 (rel_pos, rel_vel)
         
+        # Transformer Encoder
+        self.history_embedding = layer_init(nn.Linear(history_input_dim, d_model))
+        self.pos_encoder = PositionalEncoding(d_model, max_len=env_cfg.history_len)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=4, dim_feedforward=256, batch_first=True)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
+
+        # 学生网络的主体
         if self.use_encoder:
             self_dim = 7
             other_dim = 7 * (env_cfg.num_p - 1)
+            # 注意：这里的`lstm_pred_dim`现在是`transformer_feature_dim`
             self.student_encoder = AttentionBasedEncoder(
                 self_dim=self_dim,
                 other_dim=other_dim,
-                ob_dim=0,
-                lstm_pred_dim=lstm_feature_dim * env_cfg.num_e,
+                ob_dim=0, # ob_dim is part of self_dim and other_dim now
+                lstm_pred_dim=d_model * env_cfg.num_e,
                 embed_dim=128,
                 nhead=4
             )
-            student_feature_dim = 256
+            student_feature_dim = 256 # Output of AttentionBasedEncoder
         else:
+            # 简化的学生网络
             simple_student_obs_dim = 7 + 7 * (env_cfg.num_p - 1)
             self.student_encoder = nn.Sequential(
-                layer_init(nn.Linear(simple_student_obs_dim + lstm_feature_dim, 256)),
+                layer_init(nn.Linear(simple_student_obs_dim + d_model, 256)),
                 nn.Tanh()
             )
             student_feature_dim = 256
 
-        self.lstm = nn.LSTM(input_size=6, hidden_size=lstm_feature_dim, num_layers=2, batch_first=True)
-
+        # 教师网络
         teacher_feature_dim = 256
         self.teacher_encoder = nn.Sequential(
             layer_init(nn.Linear(privileged_obs_dim, 512)),
@@ -100,10 +131,12 @@ class ActorCritic(nn.Module):
             nn.LayerNorm(teacher_feature_dim)
         )
 
+        # Actor-Critic的头部
         self.actor_head = layer_init(nn.Linear(student_feature_dim, act_dim), std=0.01)
         self.actor_logstd = nn.Parameter(torch.ones(1, act_dim) * -0.5)
         self.critic_head = layer_init(nn.Linear(teacher_feature_dim, 1), std=1.0)
 
+        # 动作空间的缩放和偏置
         action_space = spaces.Box(-env_cfg.p_dv_step, env_cfg.p_dv_step, shape=(3,))
         self.register_buffer("action_scale", torch.tensor((action_space.high - action_space.low) / 2.0, dtype=torch.float32))
         self.register_buffer("action_bias", torch.tensor((action_space.high + action_space.low) / 2.0, dtype=torch.float32))
@@ -112,18 +145,49 @@ class ActorCritic(nn.Module):
         teacher_features = self.teacher_encoder(privileged_obs)
         return self.critic_head(teacher_features)
 
-    def get_student_features(self, obs, lstm_history):
-        self.lstm.flatten_parameters()
-        _, (h_n, _) = self.lstm(lstm_history)
-        lstm_features = h_n[-1]
+    def get_student_features(self, obs, history, history_mask=None):
+        # history shape: [batch, seq_len, features]
+        # history_mask shape: [batch, seq_len]
+        
+        # 1. 通过Transformer处理历史轨迹
+        embedded_history = self.history_embedding(history)
+        pos_encoded_history = self.pos_encoder(embedded_history.permute(1, 0, 2)).permute(1, 0, 2)
+        
+        # 创建Transformer需要的padding mask
+        # Transformer mask: True表示被mask掉（忽略）
+        if history_mask is not None:
+            src_key_padding_mask = (history_mask == 0)
+        else:
+            src_key_padding_mask = None
 
-        encoder_input_tensor = torch.cat([obs, lstm_features], dim=-1)
+        transformer_output = self.transformer_encoder(pos_encoded_history, src_key_padding_mask=src_key_padding_mask)
+        
+        # 从Transformer输出中提取固定大小的特征向量
+        # 方法：对所有未被mask的时间步的输出取平均
+        if src_key_padding_mask is not None:
+            # 扩展mask以便于对特征进行mask
+            mask_expanded = ~src_key_padding_mask.unsqueeze(-1).expand_as(transformer_output)
+            # 对未被mask的部分求和
+            sum_features = (transformer_output * mask_expanded).sum(dim=1)
+            # 计算未被mask的元素数量
+            num_unmasked = mask_expanded.sum(dim=1)
+            # 计算平均值，避免除以零
+            history_features = sum_features / torch.clamp(num_unmasked, min=1e-9)
+        else:
+            history_features = transformer_output.mean(dim=1)
+
+        # 2. 将历史特征与当前观测融合
+        # 注意：这里的融合方式取决于student_encoder的设计
+        # 对于AttentionBasedEncoder，它期望一个扁平化的输入
+        # 假设只有一个逃逸者，所以直接用history_features
+        # 如果有多个逃逸者，需要将它们的特征拼接起来
+        encoder_input_tensor = torch.cat([obs, history_features], dim=-1)
         student_features = self.student_encoder(encoder_input_tensor)
             
         return student_features
 
-    def get_action_and_value(self, obs, privileged_obs, lstm_history, action=None, deterministic=False):
-        student_features = self.get_student_features(obs, lstm_history)
+    def get_action_and_value(self, obs, privileged_obs, history, history_mask=None, action=None, deterministic=False):
+        student_features = self.get_student_features(obs, history, history_mask)
         action_mean = self.actor_head(student_features)
         
         clipped_logstd = torch.clamp(self.actor_logstd, -2, 1)
@@ -150,7 +214,7 @@ class ActorCritic(nn.Module):
         return final_action, log_prob, entropy, value, student_features
 
 class CentralizedRolloutBuffer:
-    def __init__(self, num_steps, num_agents, student_obs_dim, privileged_obs_dim, act_dim, device, lstm_cfg):
+    def __init__(self, num_steps, num_agents, student_obs_dim, privileged_obs_dim, act_dim, device, history_cfg):
         self.num_steps = num_steps
         self.num_agents = num_agents
         self.device = device
@@ -161,7 +225,9 @@ class CentralizedRolloutBuffer:
         self.rewards = torch.zeros((num_steps, num_agents)).to(device)
         self.dones = torch.zeros((num_steps, num_agents)).to(device)
         self.values = torch.zeros((num_steps, num_agents)).to(device)
-        self.lstm_history = torch.zeros((num_steps, num_agents, lstm_cfg.lstm_history_len, 6)).to(device)
+        # 修改：存储历史轨迹和掩码
+        self.history = torch.zeros((num_steps, num_agents, history_cfg.history_len, 6)).to(device)
+        self.history_masks = torch.zeros((num_steps, num_agents, history_cfg.history_len)).to(device)
         self.step = 0
 
     def add(self, obs, privileged_obs, actions, logprobs, rewards, dones, values, infos, pursuer_ids, evader_ids):
@@ -173,9 +239,11 @@ class CentralizedRolloutBuffer:
         self.dones[self.step] = dones
         self.values[self.step] = values
         for i, agent_id in enumerate(pursuer_ids):
+            # 假设只有一个逃逸者
             evader_id = evader_ids[0]
-            if agent_id in infos and f'lstm_history_input_{evader_id}' in infos[agent_id]:
-                self.lstm_history[self.step, i] = torch.from_numpy(infos[agent_id][f'lstm_history_input_{evader_id}']).to(self.device)
+            if agent_id in infos and f'history_input_{evader_id}' in infos[agent_id]:
+                self.history[self.step, i] = torch.from_numpy(infos[agent_id][f'history_input_{evader_id}']).to(self.device)
+                self.history_masks[self.step, i] = torch.from_numpy(infos[agent_id][f'history_mask_{evader_id}']).to(self.device)
         self.step = (self.step + 1) % self.num_steps
 
     def compute_returns(self, next_value, next_done, gamma, gae_lambda):
@@ -208,7 +276,8 @@ class CentralizedRolloutBuffer:
                 self.logprobs[step_indices, agent_indices],
                 self.advantages[step_indices, agent_indices],
                 self.returns[step_indices, agent_indices],
-                self.lstm_history[step_indices, agent_indices],
+                self.history[step_indices, agent_indices],
+                self.history_masks[step_indices, agent_indices],
             )
 
 def train(cfg: TrainConfig, env_cfg: MPE_POMDP_EnvCfg, all_params: dict):
@@ -251,7 +320,7 @@ def train(cfg: TrainConfig, env_cfg: MPE_POMDP_EnvCfg, all_params: dict):
     current_dist_cap = cfg.initial_dist_cap
     current_p_init_dv = cfg.initial_p_init_dv
     env.set_difficulty_parameters(episode_length=curriculum_max_episode_length, dist_cap=current_dist_cap, p_init_dv=current_p_init_dv)
-    print(f"POMDP Mode: {env_cfg.use_partial_obs}, Obs Interval: {env_cfg.obs_interval}")
+    print(f"POMDP Mode: {env_cfg.use_partial_obs}, Obs Interval: {env_cfg.obs_interval}, History Length: {env_cfg.history_len}")
     print(f"任务时长固定: {curriculum_max_episode_length}s, 初始捕获距离: {current_dist_cap}m, 初始燃料: {current_p_init_dv}m/s")
 
     pursuer_ids = [f'p_{i}' for i in range(env_cfg.num_p)]
@@ -349,11 +418,33 @@ def train(cfg: TrainConfig, env_cfg: MPE_POMDP_EnvCfg, all_params: dict):
             pursuer_priv_obs_list = [torch.Tensor(infos[name]['privileged_state']).to(cfg.device) for name in pursuer_ids]
             pursuer_priv_obs_tensor = torch.stack(pursuer_priv_obs_list)
 
-            lstm_history_list = [torch.from_numpy(infos[name][f'lstm_history_input_{evader_ids[0]}']).float().to(cfg.device) for name in pursuer_ids]
-            lstm_history_tensor = torch.stack(lstm_history_list)
+            # 从infos中获取历史和掩码
+            history_list = [torch.from_numpy(infos[name][f'history_input_{evader_ids[0]}']).float().to(cfg.device) for name in pursuer_ids]
+            history_tensor = torch.stack(history_list)
+            mask_list = [torch.from_numpy(infos[name][f'history_mask_{evader_ids[0]}']).float().to(cfg.device) for name in pursuer_ids]
+            mask_tensor = torch.stack(mask_list)
+
+            # --- [新增] 调试观测值 ---
+            if cfg.debug_observation and global_step > 0 and global_step % 200 == 0:
+                p0_obs = pursuer_obs_tensor[0]
+                p0_history = history_tensor[0]
+                p0_mask = mask_tensor[0]
+                priv_obs = pursuer_priv_obs_tensor[0] # 特权观测对所有智能体都是一样的
+
+                print("\n" + "="*40 + f" DEBUG OBSERVATION @ G_Step:{global_step} " + "="*40)
+                
+                print(f"--- Input to Student Actor (p_0) ---")
+                print(f"  - Regular Obs (self+teammates): shape={p0_obs.shape}\n{p0_obs.cpu().numpy()}")
+                print(f"  - History Obs (for Transformer): shape={p0_history.shape}\n{p0_history.cpu().numpy()}")
+                print(f"  - History Mask: shape={p0_mask.shape}\n{p0_mask.cpu().numpy()}")
+                
+                print(f"\n--- Input to Critic (Privileged) ---")
+                print(f"  - Privileged State (Anchor+Relative): shape={priv_obs.shape}\n{priv_obs.cpu().numpy()}")
+                print("="*105 + "\n")
+            # --- 调试结束 ---
 
             with torch.no_grad():
-                actions_tensor, log_prob, _, values, _ = agent.get_action_and_value(pursuer_obs_tensor, pursuer_priv_obs_tensor, lstm_history_tensor)
+                actions_tensor, log_prob, _, values, _ = agent.get_action_and_value(pursuer_obs_tensor, pursuer_priv_obs_tensor, history_tensor, history_mask=mask_tensor)
                 values = values.flatten()
 
             evader_actions = env.get_evader_actions()
@@ -403,8 +494,8 @@ def train(cfg: TrainConfig, env_cfg: MPE_POMDP_EnvCfg, all_params: dict):
         num_minibatches_processed = 0
 
         for epoch in range(cfg.update_epochs):
-            for b_obs, b_priv_obs, b_actions, b_logprobs, b_advantages, b_returns, b_lstm_hist in buffer.get(cfg.num_steps * env_cfg.num_p, cfg.num_steps * env_cfg.num_p // cfg.num_mini_batches):
-                _, new_logprob, entropy, new_value, student_features = agent.get_action_and_value(b_obs, b_priv_obs, b_lstm_hist, b_actions)
+            for b_obs, b_priv_obs, b_actions, b_logprobs, b_advantages, b_returns, b_hist, b_hist_mask in buffer.get(cfg.num_steps * env_cfg.num_p, cfg.num_steps * env_cfg.num_p // cfg.num_mini_batches):
+                _, new_logprob, entropy, new_value, student_features = agent.get_action_and_value(b_obs, b_priv_obs, b_hist, b_hist_mask, b_actions)
                 new_value = new_value.view(-1)
                 
                 logratio = new_logprob - b_logprobs
@@ -481,4 +572,5 @@ def train(cfg: TrainConfig, env_cfg: MPE_POMDP_EnvCfg, all_params: dict):
     print("训练完成!")
 
 if __name__ == "__main__":
-    train(TrainConfig(), MPE_POMDP_EnvCfg(), {{}})
+    # 在这里传递更新后的env_cfg
+    train(TrainConfig(), MPE_POMDP_EnvCfg(), {})
