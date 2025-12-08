@@ -29,6 +29,7 @@ class MPE_POMDP_EnvCfg(MPEEnvCfg):
     lambert_reward_weight: float = 5
     lambert_transfer_time: float = 7200 #Lambert转移时间（秒）
     mu: float = 3.986004418e14
+    GEO_ORBIT_RADIUS: float = 42164000.0 # 地球同步轨道名义半径 (米)
 
 class MPE_POMDP_Env(MPEEnv):
     """
@@ -54,21 +55,20 @@ class MPE_POMDP_Env(MPEEnv):
         if self._config.use_partial_obs:
             self.evader_history_buffers = {f'e_{i}': deque(maxlen=self._config.history_len) for i in range(self._config.num_e)}
             self.obs_counters = {f'e_{i}': 0 for i in range(self._config.num_e)}
-            # 存储每个时间步是否是真实观测
             self.evader_history_mask_buffers = {f'e_{i}': deque(maxlen=self._config.history_len) for i in range(self._config.num_e)}
 
-            # 重新定义观测空间
+            # V4版观测空间：只包含自身和队友信息
             self.observation_spaces = {}
             for a in self.possible_agents:
                 if a.startswith('p_'):
-                    # 自身维度: 6(状态) + 1(燃料)
-                    self_obs_dim = 7
-                    # 队友维度: (N-1) * (6状态 + 1燃料)
-                    other_pursuers_obs_dim = 7 * (self._config.num_p - 1)
-                    # 最终观测不包含历史轨迹，历史轨迹将作为单独的输入进入网络
-                    obs_shape = (self_obs_dim + other_pursuers_obs_dim,)
+                    # 自身信息: 高度差(1), 方向(3), 速度(3), 燃料(1) = 8
+                    self_obs_dim = 8
+                    # 队友信息: 相对位置(3), 相对速度(3), 燃料(1) = 7
+                    teammates_obs_dim = 7 * (self._config.num_p - 1)
+                    
+                    obs_shape = (self_obs_dim + teammates_obs_dim,)
                     self.observation_spaces[a] = spaces.Box(-np.inf, np.inf, shape=obs_shape)
-                else: # Evader's observation
+                else: # 逃逸者保持不变
                     self.observation_spaces[a] = spaces.Box(-np.inf, np.inf, shape=(6,))
 
     def reset(self, seed=None, options=None):
@@ -224,38 +224,34 @@ class MPE_POMDP_Env(MPEEnv):
                 obs_components = []
                 my_state = all_states[agent_id]
                 
-                # 1. 自身信息 (7维) - 绝对坐标，但经过symlog
-                obs_components.append(self._symlog(my_state))
-                obs_components.append(np.array([all_fuels[agent_id] / self._config.p_init_dv]))
+                # 1. 自身信息 (8维)
+                my_pos = my_state[:3]
+                my_vel = my_state[3:]
+                my_dist_to_center = np.linalg.norm(my_pos)
+                alt_deviation = my_dist_to_center - self._config.GEO_ORBIT_RADIUS
+                pos_direction = my_pos / (my_dist_to_center + 1e-6)
+                fuel_ratio = np.array([all_fuels.get(agent_id, 0.0) / self._config.p_init_dv])
+                obs_components.extend([np.array([alt_deviation]), pos_direction, my_vel, fuel_ratio])
 
-                # 2. 队友信息 (每个队友 7维) - 相对坐标
-                other_pursuer_info = []
+                # 2. 队友信息 (每个7维)
+                teammate_info = []
                 for i in range(self._config.num_p):
-                    pursuer_id = f'p_{i}'
-                    if pursuer_id != agent_id:
-                        if pursuer_id in all_states:
-                            other_state = all_states[pursuer_id]
-                            # 相对状态 = 对方状态 - 自身状态
-                            rel_state = other_state - my_state
-                            other_fuel = all_fuels[pursuer_id] / self._config.p_init_dv
-                            # 对相对状态进行symlog
-                            other_pursuer_info.append(np.concatenate([
-                                self._symlog(rel_state),
-                                [other_fuel]
-                            ]))
+                    teammate_id = f'p_{i}'
+                    if teammate_id != agent_id:
+                        if teammate_id in all_states:
+                            teammate_state = all_states[teammate_id]
+                            rel_state = teammate_state - my_state
+                            teammate_fuel = np.array([all_fuels.get(teammate_id, 0.0) / self._config.p_init_dv])
+                            teammate_info.append(np.concatenate([rel_state, teammate_fuel]))
                         else:
-                            # 如果队友不存在，用0填充
-                            other_pursuer_info.append(np.zeros(7))
-                
-                if other_pursuer_info:
-                    obs_components.append(np.concatenate(other_pursuer_info))
-                elif self._config.num_p > 1:
-                    # 确保在没有其他队友时维度仍然正确
-                    obs_components.append(np.zeros(7 * (self._config.num_p - 1)))
+                            teammate_info.append(np.zeros(7))
+                if teammate_info:
+                    obs_components.append(np.concatenate(teammate_info))
 
+                # 注意：对手信息已从此向量中移除
                 observations[agent_id] = np.concatenate(obs_components)
-            else: # Evader
-                observations[agent_id] = self._symlog(self.states[agent_id])
+            else: # 逃逸者
+                observations[agent_id] = self.states[agent_id]
         
         return observations
 

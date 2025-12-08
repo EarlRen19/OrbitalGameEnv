@@ -60,7 +60,6 @@ def main():
     env_parser.add_argument("--e_dv_step", type=float, default=MPEEnvCfg.e_dv_step, help="逃逸方每次机动的最大速度增量 (m/s)")
 
     # --- 模型结构配置 ---
-    model_parser.add_argument("--use_encoder", type=lambda x: (str(x).lower() == 'true'), default=TrainConfig.use_encoder, help="是否在Actor网络中使用Attention Encoder")
     model_parser.add_argument("--history_len", type=int, default=MPE_POMDP_EnvCfg.history_len, help="Transformer输入序列的历史长度")
 
     # --- 奖励权重配置 ---
@@ -150,7 +149,6 @@ def main():
 
     # --- 2. 创建并填充训练配置 ---
     train_cfg = TrainConfig()
-    train_cfg.use_encoder = args.use_encoder
     train_cfg.gamma = args.gamma
     train_cfg.gae_lambda = args.gae_lambda
     train_cfg.clip_coef = args.clip_coef
