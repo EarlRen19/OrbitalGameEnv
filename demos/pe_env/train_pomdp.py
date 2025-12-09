@@ -29,7 +29,7 @@ class TrainConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_coef: float = 0.2
-    ent_coef: float = 0.001
+    ent_coef: float = 0.011
     vf_coef: float = 0.5
     
     # 学习率与优化器
@@ -45,16 +45,26 @@ class TrainConfig:
     num_mini_batches: int = 4
     update_epochs: int = 5
     
-    # 课程学习
+    # === 课程学习参数修改 ===
     initial_episode_length: int = 3600 * 10
     curriculum_check_episodes: int = 50
-    success_rate_threshold: float = 0.7
-    initial_dist_cap: float = 60e3
+    success_rate_threshold: float = 0.8
+
+    # 距离定义：m = 距离捕获边界的距离
+    initial_m: float = 2000.0      # 初始非常近
+    target_m: float = 80000.0      # 最终目标非常远
+    ring_width_delta: float = 5000.0 # 初始化的圆环厚度
+    m_increment: float = 2000.0    # 每次升级增加的距离
+    
+    # 捕获半径保持较大，或者轻微减小
+    initial_dist_cap: float = 50000.0
+    min_dist_cap: float = 30000.0
+    dist_cap_decrement: float = 500.0 # 慢慢缩圈
+
+    # 燃料课程
     initial_p_init_dv: float = 500.0
-    dist_cap_decrement: float = 1e3
-    p_init_dv_decrement: float = 100.0
-    min_dist_cap: float = 30e3
     min_p_init_dv: float = 300.0
+    p_init_dv_decrement: float = 20.0
 
     # 调试与杂项
     debug_critic: bool = False 
@@ -100,7 +110,16 @@ class HRG_ActorCritic(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=4, dim_feedforward=256, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
         
-        self.student_enc = HRG_Student_Encoder(env_cfg, hidden_dim=d_model)
+        # [修改] 显式传递维度参数，确保 Student 知道 Obs 结构
+        # Obs 结构: [Self | Target | Teammates]
+        # 注意: 这里的维度需要与环境中的观测空间定义严格对应
+        self.student_enc = HRG_Student_Encoder(
+            env_cfg, 
+            self_input_dim=8, 
+            target_input_dim=3,   # <--- 必须是 3，根据环境的观测空间定义 (仅位置)
+            teammate_input_dim=7, 
+            hidden_dim=d_model
+        )
         
         self.actor_head = nn.Sequential(
             layer_init(nn.Linear(self.student_enc.output_dim, 256)), nn.Tanh(),
@@ -274,16 +293,59 @@ def train(cfg: TrainConfig, env_cfg: MPE_POMDP_EnvCfg, all_params: dict):
 
     writer.add_text("hyperparameters", f"<pre>{vars(cfg)}</pre>")
 
+    # =====================================================================================
+    # == GUIDE: Implementing the 'Last Known Position' Observation Enhancement
+    # =====================================================================================
+    # To implement the observation space enhancement, you need to modify the environment
+    # in `env/mpe_pomdp_env.py`. Here are the required changes:
+    #
+    # 1. In `MPE_POMDP_Env.__init__()`:
+    #    - For each pursuer, add a state to store the last known LVLH position and velocity
+    #      of the evader (6 DoF).
+    #      `self.last_known_evader_state = {p_id: np.zeros(6) for p_id in self.pursuer_ids}`
+    #    - Increase the size of the student's observation space to include these 6 values.
+    #      Find the line defining `self.observation_spaces[p_id]` and add 6 to its dimension.
+    #
+    # 2. In `MPE_POMDP_Env.reset()`:
+    #    - After the initial positions of all agents are set, initialize `self.last_known_evader_state`
+    #      for each pursuer with the true state of the evader. The first observation is always accurate.
+    #
+    # 3. In `MPE_POMDP_Env._get_obs(self, p_id)` (or wherever observations are constructed):
+    #    - When building the observation vector for a pursuer `p_id`, concatenate
+    #      `self.last_known_evader_state[p_id]` to the end of the vector.
+    #    - IMPORTANT: Ensure this new data is normalized in the same way as other state
+    #      information in the observation vector (e.g., dividing by max distance/velocity).
+    #
+    # 4. In `MPE_POMDP_Env.step()`:
+    #    - After determining which pursuers can see the evader in the current step.
+    #    - For each pursuer `p_id`:
+    #      - If the evader is visible to `p_id`:
+    #        `self.last_known_evader_state[p_id] = self.evaders['e_0'].get_lvlh_state()`
+    #      - If the evader is NOT visible, do nothing. The state from the previous step is retained.
+    #
+    # After these changes, the `student_obs_dim` read below will automatically be larger,
+    # and the observation tensor will contain the required information for the student model.
+    # =====================================================================================
     env = MPE_POMDP_Env(env_cfg)
     
+    # === 初始化难度 ===
+    current_m = cfg.initial_m
     current_dist_cap = cfg.initial_dist_cap
     current_p_init_dv = cfg.initial_p_init_dv
-    env.set_difficulty_parameters(dist_cap=current_dist_cap, p_init_dv=current_p_init_dv)
-    print(f"Initial Difficulty: Dist_Cap={current_dist_cap}m, Fuel={current_p_init_dv}m/s")
+    
+    # 将参数传给环境
+    env.set_difficulty_parameters(
+        m_distance=current_m,
+        ring_width_delta=cfg.ring_width_delta,
+        p_init_dv=current_p_init_dv, 
+        dist_cap=current_dist_cap
+    )
+    print(f"Initial Difficulty: m={current_m}m, RingWidth={cfg.ring_width_delta}m, Dist_Cap={current_dist_cap}m, Fuel={current_p_init_dv}m/s")
 
     pursuer_ids = [f'p_{i}' for i in range(env_cfg.num_p)]
     evader_ids = [f'e_{i}' for i in range(env_cfg.num_e)]
     
+    # 注意：这里的维度现在是动态的，从环境中获取
     student_obs_dim = env.observation_spaces[pursuer_ids[0]].shape[0]
     priv_obs_dim = (env_cfg.num_p + env_cfg.num_e) * 6
     act_dim = env.action_spaces[pursuer_ids[0]].shape[0]
@@ -315,7 +377,7 @@ def train(cfg: TrainConfig, env_cfg: MPE_POMDP_EnvCfg, all_params: dict):
     current_episode_return = 0.0
     ep_len_counter = 0
     
-    obs, infos = env.reset()
+    obs, infos = env.reset() # obs is a dict, infos is a dict
     
     for update in range(start_update, num_updates + 1):
         if cfg.anneal_ent:
@@ -339,7 +401,7 @@ def train(cfg: TrainConfig, env_cfg: MPE_POMDP_EnvCfg, all_params: dict):
                 actions_tensor, log_prob, _, values, _, _ = agent.get_action_and_value(pursuer_obs_tensor, pursuer_priv_obs_tensor, history_tensor, mask_tensor)
                 values = values.flatten()
 
-            evader_actions = env.get_evader_actions()
+            evader_actions = env.get_evader_actions() # This should return a dict of actions for evaders
             actions_to_step = {name: actions_tensor[i].cpu().numpy() for i, name in enumerate(pursuer_ids)}
             actions_to_step.update(evader_actions)
 
@@ -355,10 +417,11 @@ def train(cfg: TrainConfig, env_cfg: MPE_POMDP_EnvCfg, all_params: dict):
             obs = next_obs
             
             if any(terminations.values()) or any(truncations.values()):
-                final_info = next(iter(infos.values()), None)
+                final_info = next(iter(infos.values()), None) # Get info from one of the agents
                 if final_info:
                     stats = final_info.get('episode_statistics', {})
-                    if stats: recent_episode_stats.append(stats)
+                    if stats:
+                        recent_episode_stats.append(stats)
                     
                     print(f"Update {update}, G_Step {global_step}: Ep Ret: {current_episode_return:.2f}, Len: {ep_len_counter}, Reason: {final_info.get('termination_reason', 'Unknown')}")
                     writer.add_scalar("charts/episodic_return", current_episode_return, global_step)
@@ -369,25 +432,30 @@ def train(cfg: TrainConfig, env_cfg: MPE_POMDP_EnvCfg, all_params: dict):
                 ep_len_counter = 0
 
         with torch.no_grad():
+            # Ensure next_priv_obs is correctly formed from the last infos dict
             next_priv_obs = torch.stack([torch.Tensor(infos[name]['privileged_state']).to(cfg.device) for name in pursuer_ids])
-            next_value = agent.get_value(next_priv_obs).mean()
-            next_done = torch.tensor([False for _ in pursuer_ids]).to(cfg.device)
+            next_value = agent.get_value(next_priv_obs).mean() # Use mean to get a single value if critic outputs per agent
+            next_done = torch.tensor([False for _ in pursuer_ids]).to(cfg.device) # Assuming reset means no done for next step calculation
             buffer.compute_returns(next_value, next_done, cfg.gamma, cfg.gae_lambda)
 
         agent.train()
         for epoch in range(cfg.update_epochs):
+            # The batch size calculation here might need adjustment based on how buffer.get yields data
+            # Assuming buffer.get yields flattened data for mini-batches
             for b_obs, b_priv_obs, b_actions, b_logprobs, b_advantages, b_returns, b_hist, b_hist_mask in buffer.get(cfg.num_steps * env_cfg.num_p, cfg.num_steps * env_cfg.num_p // cfg.num_mini_batches):
                 
                 _, new_logprob, entropy, new_value, student_features, _ = agent.get_action_and_value(b_obs, b_priv_obs, b_hist, b_hist_mask, b_actions)
-                new_value = new_value.view(-1)
+                new_value = new_value.view(-1) # Ensure new_value is a flat tensor
                 
                 logratio = new_logprob - b_logprobs
                 ratio = logratio.exp()
+                # Normalize advantages for stability
                 adv_norm = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
                 pg_loss = torch.max(-adv_norm * ratio, -adv_norm * torch.clamp(ratio, 1 - cfg.clip_coef, 1 + cfg.clip_coef)).mean()
                 v_loss = 0.5 * ((new_value - b_returns) ** 2).mean()
                 entropy_loss = entropy.mean()
                 
+                # Distillation loss calculation
                 with torch.no_grad():
                     teacher_targets = agent.teacher_enc(b_priv_obs)
                 distil_loss = F.mse_loss(student_features, teacher_targets)
@@ -399,25 +467,56 @@ def train(cfg: TrainConfig, env_cfg: MPE_POMDP_EnvCfg, all_params: dict):
                 nn.utils.clip_grad_norm_(agent.parameters(), 0.5)
                 optimizer.step()
 
-        if len(recent_episode_stats) >= 10:
+        # [新增] 记录损失到 TensorBoard
+        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
+        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
+        writer.add_scalar("losses/entropy_loss", entropy_loss.item(), global_step)
+        writer.add_scalar("losses/distillation_loss", distil_loss.item(), global_step)
+        writer.add_scalar("losses/total_loss", loss.item(), global_step)
+
+        # === 课程学习更新逻辑 ===
+        if len(recent_episode_stats) >= 10: # Check if we have enough stats for a meaningful average
+            # Ensure there are enough episodes to compare, and that the latest stats are from a later point
             if recent_episode_stats[-1]['total_episodes'] > recent_episode_stats[0]['total_episodes']:
                 total_eps = recent_episode_stats[-1]['total_episodes'] - recent_episode_stats[0]['total_episodes']
                 successes = recent_episode_stats[-1]['success_count'] - recent_episode_stats[0]['success_count']
-                current_success_rate = successes / total_eps
+                current_success_rate = successes / total_eps if total_eps > 0 else 0
                 writer.add_scalar("charts/success_rate", current_success_rate, global_step)
 
                 if current_success_rate >= cfg.success_rate_threshold:
                     changed = False
-                    if current_dist_cap > cfg.min_dist_cap:
-                        current_dist_cap -= cfg.dist_cap_decrement
+                    
+                    # 1. 增加距离 (拉远)
+                    if current_m < cfg.target_m:
+                        current_m = min(current_m + cfg.m_increment, cfg.target_m)
                         changed = True
+                        
+                    # 2. 减小燃料
                     if current_p_init_dv > cfg.min_p_init_dv:
-                        current_p_init_dv -= cfg.p_init_dv_decrement
+                        current_p_init_dv = max(current_p_init_dv - cfg.p_init_dv_decrement, cfg.min_p_init_dv)
                         changed = True
+                        
+                    # 3. 减小捕获半径 (缩圈)
+                    if current_dist_cap > cfg.min_dist_cap:
+                        current_dist_cap = max(current_dist_cap - cfg.dist_cap_decrement, cfg.min_dist_cap)
+                        changed = True
+
                     if changed:
-                        env.set_difficulty_parameters(dist_cap=current_dist_cap, p_init_dv=current_p_init_dv)
-                        print(f"*** CURRICULUM UPDATE: SR={current_success_rate:.2f} -> New DistCap={current_dist_cap}m, New Fuel={current_p_init_dv}m/s ***")
-                        recent_episode_stats.clear()
+                        env.set_difficulty_parameters(
+                            m_distance=current_m,
+                            ring_width_delta=cfg.ring_width_delta,
+                            p_init_dv=current_p_init_dv, 
+                            dist_cap=current_dist_cap
+                        )
+                        log_msg = (f"*** CURRICULUM UPDATE (SR={current_success_rate:.2f}): m={current_m:.0f}m, RingWidth={cfg.ring_width_delta}m, Cap={current_dist_cap:.0f}m, Fuel={current_p_init_dv:.0f}m/s ***")
+                        print(log_msg)
+                        
+                        # [修改] 写入结构化的日志条目
+                        with open(progress_path, "a") as f:
+                            log_entry = f"{update}	{global_step}	{current_success_rate:.3f}	{current_m:.0f}	{cfg.ring_width_delta:.0f}	{current_dist_cap:.0f}	{current_p_init_dv:.0f}\n"
+                            f.write(log_entry)
+                            
+                        recent_episode_stats.clear() # Clear stats to start fresh for the new difficulty level
 
     env.close()
     writer.close()

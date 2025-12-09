@@ -258,7 +258,8 @@ class MPEEnv(PEEnv):
         
         capture_occurred = min(dists_to_evader) < self._config.dist_cap
 
-        # 过程优势奖励
+        # --- 3. 过程优势诱导奖励 (r_adv) 优化版 ---
+        # 基于论文 4.4.1 节逻辑进行平滑处理
         num_future_steps = int(self._config.advantage_reward_horizon / self._config.dt)
         future_rewards = {a: 0.0 for a in self.pursuer_ids}
         
@@ -273,28 +274,36 @@ class MPEEnv(PEEnv):
             for i, agent_id in enumerate(self.pursuer_ids):
                 if agent_id in self.agents:
                     temp_p_state = np.copy(self.states[agent_id])
+                    
                     min_future_dist = float('inf')
-                    min_step = num_future_steps
+                    min_step_idx = num_future_steps
                     
                     for step in range(num_future_steps):
                         current_sim_time = self._time + datetime.timedelta(seconds=step * self._config.dt)
                         _, temp_p_state = self._orbit_lib.orbit_hpop(current_sim_time, temp_p_state, self._config.dt, self._config.hpop_in)
+                        
                         dist = np.linalg.norm(temp_p_state[:3] - future_e_traj[step])
+                        
                         if dist < min_future_dist:
                             min_future_dist = dist
-                            min_step = step
+                            min_step_idx = step
                     
-                    if min_future_dist < self._config.dist_cap:
-                        time_factor = (num_future_steps - min_step) / num_future_steps
-                        dist_factor = (self._config.dist_cap - min_future_dist) / self._config.dist_cap
-                        radv = self._config.reward_advantage_weight * time_factor * dist_factor
+                    dist_threshold = self._config.dist_cap
+                    
+                    norm_time = min_step_idx / num_future_steps 
+                    time_discount = np.exp(-2.0 * norm_time)
+
+                    if min_future_dist < dist_threshold:
+                        dist_advantage = (dist_threshold - min_future_dist) / dist_threshold
+                        radv = 1.0 + dist_advantage + time_discount
+                        
                     else:
-                        time_factor = (num_future_steps - min_step) / num_future_steps
-                        miss_dist = min_future_dist - self._config.dist_cap
-                        dist_factor = 1 - np.exp(-2.3e-5 * miss_dist)
-                        radv = -self._config.reward_advantage_weight * time_factor * dist_factor
-                    
-                    future_rewards[agent_id] = radv
+                        miss_ratio = min_future_dist / dist_threshold
+                        penalty = np.log(miss_ratio) 
+                        radv = -1.0 * penalty * 0.5
+                        radv = max(radv, -2.0)
+
+                    future_rewards[agent_id] = self._config.reward_advantage_weight * radv
 
         # 分配总奖励
         for i, agent_id in enumerate(self.pursuer_ids):

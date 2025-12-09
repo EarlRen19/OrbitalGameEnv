@@ -9,80 +9,78 @@ def symlog(x):
     return torch.sign(x) * torch.log(torch.abs(x) + 1.0)
 
 class HRG_Student_Encoder(nn.Module):
-    """
-    分层博弈学生编码器 (V3 - 最终版)
-    - 严格遵守POMDP假设，obs中只包含自身和队友信息。
-    - 对手信息完全来自于Transformer处理后的history_feats。
-    - HLS通过注意力机制，权衡“团队态势”和“对手态势”的重要性。
-    """
-    def __init__(self, env_cfg, self_input_dim=8, teammate_input_dim=7, hidden_dim=128):
+    def __init__(self, env_cfg, self_input_dim=8, target_input_dim=3, teammate_input_dim=7, hidden_dim=128):
         super().__init__()
         self.num_p = env_cfg.num_p
         self.num_teammates = env_cfg.num_p - 1
         self.hidden_dim = hidden_dim
         
-        # --- 0. 输入归一化层 ---
-        total_obs_dim = self_input_dim + teammate_input_dim * self.num_teammates
+        # Obs = Self(8) + Target(3*Ne) + Teammates(...)
+        self.target_obs_dim = target_input_dim * env_cfg.num_e
+        total_obs_dim = self_input_dim + self.target_obs_dim + teammate_input_dim * self.num_teammates
         self.input_norm = nn.LayerNorm(total_obs_dim)
 
-        # --- A. 感知层 (Perception) ---
-        self.self_enc = nn.Sequential(nn.Linear(self_input_dim, hidden_dim), nn.Tanh()) 
+        # A. 感知层
+        # 1. 自身编码
+        self.self_enc = nn.Sequential(nn.Linear(self_input_dim, hidden_dim), nn.Tanh())
+        
+        # 2. 目标即时观测编码 (新增)
+        # 这代表了“不完美但实时的视觉信息”
+        self.target_enc = nn.Sequential(nn.Linear(self.target_obs_dim, hidden_dim), nn.Tanh())
+        
+        # 3. 队友编码
         self.teammate_enc = nn.Sequential(nn.Linear(teammate_input_dim, hidden_dim), nn.Tanh())
 
-        # --- B. HLS (High-Level Strategy) - 博弈态势权衡 ---
-        # Query: "我是谁?"
-        self.hls_query = nn.Linear(hidden_dim, hidden_dim)
-        # Keys: "团队情况" 和 "敌人情况"
-        self.hls_key_team = nn.Linear(hidden_dim, hidden_dim)
-        self.hls_key_evader = nn.Linear(hidden_dim, hidden_dim)
+        # B. HLS 
+        # 我们需要融合 Self 和 TargetObs 作为 Query
+        self.fusion_layer = nn.Linear(hidden_dim * 2, hidden_dim) # 融合 Self + TargetObs
         
-        # --- C. LLS 接口 (Output Interface) ---
-        # 输出维度 = 自身嵌入 + 最终的博弈上下文
+        self.hls_query = nn.Linear(hidden_dim, hidden_dim)
+        self.hls_key_team = nn.Linear(hidden_dim, hidden_dim)
+        self.hls_key_evader = nn.Linear(hidden_dim, hidden_dim) # 来自 History Transformer
+        
         self.output_dim = hidden_dim + hidden_dim
 
     def forward(self, obs, history_feats):
         batch_size = obs.shape[0]
-        
-        # --- 1. 输入归一化 ---
         obs_normalized = self.input_norm(obs)
 
-        # --- 2. 数据解析 ---
-        self_in = obs_normalized[:, :8]
-        teammates_in = obs_normalized[:, 8:].view(batch_size, self.num_teammates, 7)
+        # 切分数据
+        # [Self(8) | Target(3*Ne) | Teammates...]
+        idx_self = 8
+        idx_target = idx_self + self.target_obs_dim
         
-        # --- 3. 编码 (Perception) ---
-        self_emb = self.self_enc(self_in) # [B, H]
+        self_in = obs_normalized[:, :idx_self]
+        target_in = obs_normalized[:, idx_self:idx_target]
+        teammates_in = obs_normalized[:, idx_target:].view(batch_size, self.num_teammates, 7)
+        
+        # 编码
+        self_emb = self.self_enc(self_in)       # [B, H]
+        target_emb = self.target_enc(target_in) # [B, H]
         teammate_embs = self.teammate_enc(teammates_in) # [B, Np-1, H]
         
-        # --- 4. HLS: 权衡团队与对手 ---
-        # 生成团队态势的统一表示 (通过平均池化)
-        team_context = teammate_embs.mean(dim=1) # [B, H]
+        # HLS 逻辑升级
+        # 现在的“我”不仅包含燃料状态，还包含我看到的那个残缺的目标位置
+        # 这有助于网络判断：如果我看不到目标（Obs是旧的），我是不是该多信一点 History？
+        self_context = torch.cat([self_emb, target_emb], dim=-1)
+        self_context = F.relu(self.fusion_layer(self_context)) # [B, H]
         
-        # Query: "基于我的状态，我应该如何分配注意力？"
-        Q = self.hls_query(self_emb).unsqueeze(1) # [B, 1, H]
+        team_context = teammate_embs.mean(dim=1)
         
-        # Keys: "团队态势" vs "对手态势"
+        Q = self.hls_query(self_context).unsqueeze(1)
         K_team = self.hls_key_team(team_context).unsqueeze(1)
         K_evader = self.hls_key_evader(history_feats).unsqueeze(1)
         
-        # 将两个Key拼接，形成注意力评估的范围
-        K = torch.cat([K_team, K_evader], dim=1) # [B, 2, H]
-        
-        # 计算注意力分数
+        K = torch.cat([K_team, K_evader], dim=1)
         scores = torch.bmm(Q, K.transpose(1, 2)) / (self.hidden_dim ** 0.5)
-        attn_weights = F.softmax(scores, dim=-1) # [B, 1, 2] -> 对"团队"和"对手"的注意力权重
+        attn_weights = F.softmax(scores, dim=-1)
         
-        # Values: 两个态势的原始特征向量
-        V = torch.stack([team_context, history_feats], dim=1) # [B, 2, H]
+        V = torch.stack([team_context, history_feats], dim=1)
+        final_context = torch.bmm(attn_weights, V).squeeze(1)
         
-        # 根据权重，生成加权的最终博弈上下文
-        final_context = torch.bmm(attn_weights, V).squeeze(1) # [B, H]
+        # 输出：融合后的自我感知 + 博弈上下文
+        student_features = torch.cat([self_context, final_context], dim=-1)
         
-        # --- 5. 整合输出 ---
-        # 这个 student_features 就是我们要和 Teacher 对齐的向量
-        student_features = torch.cat([self_emb, final_context], dim=-1)
-        
-        # 返回结构化特征，以及用于分析的注意力权重
         return student_features, attn_weights
 
 class Aligned_Teacher(nn.Module):

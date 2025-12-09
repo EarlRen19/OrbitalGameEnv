@@ -22,11 +22,11 @@ from demos.pe_env.train_pomdp import train, TrainConfig
 NEW_REWARD_DEFAULTS = {
     # --- 奖励 ---
     "lambert_reward_weight": 0.05,
-    "reward_dist_weight": 0.1,   
-    "reward_time_weight": 0.03,
+    "reward_dist_weight": 0.3,   
+    "reward_time_weight": 0.02,
     "reward_formation_weight": 0.04,
-    "reward_fuel_weight": 0.03,     # 单步燃料惩罚 
-    "reward_advantage_weight": 0.002,
+    "reward_fuel_weight": 0.02,     # 单步燃料惩罚 
+    "reward_advantage_weight": 0.012,
     "capture_reward": 30.0,         # 适当提高成功奖励，保持正负激励平衡
     "reward_timeout_penalty": -12,   # 超时惩罚，迫使它在省油和快速之间权衡
     "reward_fuelout_penalty": -15, # 加大燃料耗尽惩罚 
@@ -50,8 +50,6 @@ def main():
     # --- 环境与观测配置 ---
     env_parser.add_argument("--num_p", type=int, default=MPE_POMDP_EnvCfg.num_p, help="追捕者(pursuer)的数量")
     env_parser.add_argument("--num_e", type=int, default=MPE_POMDP_EnvCfg.num_e, help="逃逸者(evader)的数量")
-    env_parser.add_argument("--e_init_dist_min_offset", type=float, default=MPE_POMDP_EnvCfg.e_init_dist_min_offset, help="逃跑方初始距离最小偏移 (米)")
-    env_parser.add_argument("--e_init_dist_max_offset", type=float, default=MPE_POMDP_EnvCfg.e_init_dist_max_offset, help="逃跑方初始距离最大偏移 (米)")
     env_parser.add_argument("--use_partial_obs", type=lambda x: (str(x).lower() == 'true'), default=MPE_POMDP_EnvCfg.use_partial_obs, help="是否使用部分可观测环境")
     env_parser.add_argument("--obs_interval", type=int, default=MPE_POMDP_EnvCfg.obs_interval, help="在POMDP中，每隔多少步进行一次真实观测")
     env_parser.add_argument("--use_lambert_reward", type=lambda x: (str(x).lower() == 'true'), default=MPE_POMDP_EnvCfg.use_lambert_reward, help="是否使用Lambert引导奖励 (总开关)")
@@ -95,6 +93,12 @@ def main():
     # --- 课程学习参数 ---
     curriculum_parser.add_argument("--initial_episode_length", type=int, default=TrainConfig.initial_episode_length, help="初始任务时长")
     curriculum_parser.add_argument("--success_rate_threshold", type=float, default=TrainConfig.success_rate_threshold, help="提升难度的成功率阈值")
+    # 新的距离课程参数
+    curriculum_parser.add_argument("--initial_m", type=float, default=TrainConfig.initial_m, help="课程学习：初始距离m (米)")
+    curriculum_parser.add_argument("--target_m", type=float, default=TrainConfig.target_m, help="课程学习：目标距离m (米)")
+    curriculum_parser.add_argument("--m_increment", type=float, default=TrainConfig.m_increment, help="课程学习：每次提升的距离增量 (米)")
+    curriculum_parser.add_argument("--ring_width_delta", type=float, default=TrainConfig.ring_width_delta, help="课程学习：初始生成圆环的宽度 (米)")
+    # 其他课程参数
     curriculum_parser.add_argument("--initial_dist_cap", type=float, default=TrainConfig.initial_dist_cap, help="初始捕获距离")
     curriculum_parser.add_argument("--initial_p_init_dv", type=float, default=TrainConfig.initial_p_init_dv, help="初始燃料")
     curriculum_parser.add_argument("--dist_cap_decrement", type=float, default=TrainConfig.dist_cap_decrement, help="捕获距离的缩减量")
@@ -122,8 +126,6 @@ def main():
     env_cfg = MPE_POMDP_EnvCfg()
     env_cfg.num_p = args.num_p
     env_cfg.num_e = args.num_e
-    env_cfg.e_init_dist_min_offset = args.e_init_dist_min_offset
-    env_cfg.e_init_dist_max_offset = args.e_init_dist_max_offset
     env_cfg.use_partial_obs = args.use_partial_obs
     env_cfg.obs_interval = args.obs_interval
     env_cfg.history_len = args.history_len # 使用新的参数
@@ -167,6 +169,12 @@ def main():
     train_cfg.initial_episode_length = args.initial_episode_length
     train_cfg.curriculum_check_episodes = TrainConfig.curriculum_check_episodes # 保持不变
     train_cfg.success_rate_threshold = args.success_rate_threshold
+    # 填充新的课程学习参数
+    train_cfg.initial_m = args.initial_m
+    train_cfg.target_m = args.target_m
+    train_cfg.m_increment = args.m_increment
+    train_cfg.ring_width_delta = args.ring_width_delta
+    # 填充其他课程参数
     train_cfg.initial_dist_cap = args.initial_dist_cap
     train_cfg.initial_p_init_dv = args.initial_p_init_dv
     train_cfg.dist_cap_decrement = args.dist_cap_decrement

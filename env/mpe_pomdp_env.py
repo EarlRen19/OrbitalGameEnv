@@ -65,6 +65,12 @@ class MPE_POMDP_EnvCfg(MPEEnvCfg):
     use_partial_obs: bool = True
     obs_interval: int = 2
     history_len: int = 20
+
+    # === 新增课程学习参数 ===
+    init_distance_m: float = 2000.0   # 初始距离偏移 m (距离捕获边界)
+    ring_width_delta: float = 5000.0  # 圆环宽度 n - m
+    # ========================
+
     # Lambert 相关参数保留...
     use_lambert_reward: bool = True
     lambert_reward_weight: float = 5
@@ -73,7 +79,8 @@ class MPE_POMDP_EnvCfg(MPEEnvCfg):
 class MPE_POMDP_Env(MPEEnv):
     @staticmethod
     def _symlog(x):
-        return np.sign(x) * np.log(np.abs(x) + 1.0)
+        # 保持之前的归一化改进：除以10
+        return (np.sign(x) * np.log(np.abs(x) + 1.0)) / 10.0
 
     def __init__(self, config: MPE_POMDP_EnvCfg = MPE_POMDP_EnvCfg()):
         super().__init__(config)
@@ -87,9 +94,15 @@ class MPE_POMDP_Env(MPEEnv):
             self.observation_spaces = {}
             for a in self.possible_agents:
                 if a.startswith('p_'):
+                    # V5 观测空间:
+                    # 1. 自身 (8维)
+                    # 2. 目标上次已知位置 (3维, LVLH) <--- 新增
+                    # 3. 队友 (7 * (Num_P - 1))
                     self_obs_dim = 8
+                    target_obs_dim = 3 * self._config.num_e # 这里假设我们把所有逃逸者的上次位置都放进去
                     teammates_obs_dim = 7 * (self._config.num_p - 1)
-                    obs_shape = (self_obs_dim + teammates_obs_dim,)
+                    
+                    obs_shape = (self_obs_dim + target_obs_dim + teammates_obs_dim,)
                     self.observation_spaces[a] = spaces.Box(-np.inf, np.inf, shape=obs_shape)
                 else:
                     self.observation_spaces[a] = spaces.Box(-np.inf, np.inf, shape=(6,))
@@ -138,6 +151,10 @@ class MPE_POMDP_Env(MPEEnv):
 
         if self._config.use_partial_obs:
             self.obs_counters = {f'e_{i}': 0 for i in range(self._config.num_e)}
+            # 重置 Last Known
+            if hasattr(self, 'agent_memory_evader_lvlh'):
+                self.agent_memory_evader_lvlh.clear()
+
             for evader_id in self.evader_ids:
                 self.evader_history_buffers[evader_id].clear()
                 self.evader_history_mask_buffers[evader_id].clear()
@@ -147,8 +164,9 @@ class MPE_POMDP_Env(MPEEnv):
                         self.evader_history_buffers[evader_id].append(initial_state)
                         self.evader_history_mask_buffers[evader_id].append(1.0)
 
-            self._update_history_and_prepare_data()
-            observations = self._get_observations()
+            # 这里必须先 update history，算出初始的 last_known，再 get observations
+            self._update_history_and_prepare_data() 
+            observations = self._get_observations() # 重新获取包含 target 的 obs
 
             # 使用新的 LVLH 特权观测
             privileged_state = self._get_privileged_state()
@@ -157,6 +175,29 @@ class MPE_POMDP_Env(MPEEnv):
                 infos[agent]['privileged_state'] = privileged_state
 
         return observations, infos
+
+    def set_difficulty_parameters(self, m_distance=None, ring_width_delta=None, p_init_dv=None, dist_cap=None):
+        """
+        课程学习接口修改
+        m_distance: 对应 min_offset
+        """
+        if m_distance is not None:
+            self._config.init_distance_m = m_distance
+        
+        if ring_width_delta is not None:
+            self._config.ring_width_delta = ring_width_delta
+
+        # 映射到父类参数，确保父类 reset 逻辑生成的圆环正确
+        # min_offset = m
+        # max_offset = m + delta
+        self._config.e_init_dist_min_offset = self._config.init_distance_m
+        self._config.e_init_dist_max_offset = self._config.init_distance_m + self._config.ring_width_delta
+            
+        if p_init_dv is not None:
+            self._config.p_init_dv = p_init_dv
+            
+        if dist_cap is not None:
+            self._config.dist_cap = dist_cap
 
     def step(self, actions):
         self.step_count += 1
@@ -237,7 +278,7 @@ class MPE_POMDP_Env(MPEEnv):
             
             my_state = all_states[agent_id]
             
-            # 1. 自身信息 (Symlog处理)
+            # 1. 自身信息 (Symlog + 归一化)
             my_pos = my_state[:3]
             my_vel = my_state[3:]
             my_dist = np.linalg.norm(my_pos)
@@ -246,33 +287,48 @@ class MPE_POMDP_Env(MPEEnv):
             vel_sym = self._symlog(my_vel)
             fuel = np.array([self.remain_Dvs.get(agent_id, 0.0) / self._config.p_init_dv])
             
-            obs_list = [alt_dev, pos_dir, vel_sym, fuel]
-
-            # 2. 队友信息 (LVLH 转换)
+            # 2. 目标信息 (Last Known, LVLH, Symlog)
+            target_feat = []
+            for eid in self.evader_ids:
+                is_visible = (self.obs_counters[eid] % self._config.obs_interval == 0)
+                
+                mem_key = (agent_id, eid)
+                if not hasattr(self, 'agent_memory_evader_lvlh'):
+                     self.agent_memory_evader_lvlh = {}
+                
+                if eid in all_states:
+                    if is_visible or mem_key not in self.agent_memory_evader_lvlh:
+                        # 可见，或者第一次初始化：计算真实值
+                        e_state = all_states[eid]
+                        rel_pos, _ = eci_to_lvlh_relative(my_state, e_state[:3], None)
+                        self.agent_memory_evader_lvlh[mem_key] = rel_pos
+                    
+                    # 取出记忆中的值 (Symlog处理)
+                    target_feat.append(self._symlog(self.agent_memory_evader_lvlh[mem_key]))
+                else:
+                    # 如果目标不存在，用零填充
+                    target_feat.append(np.zeros(3))
+            
+            # 3. 队友信息 (LVLH)
             teammate_data = []
             for i in range(self._config.num_p):
                 tid = f'p_{i}'
                 if tid != agent_id:
                     if tid in all_states:
                         t_state = all_states[tid]
-                        # 转换！
                         rel_pos, rel_vel = eci_to_lvlh_relative(my_state, t_state[:3], t_state[3:])
                         t_fuel = np.array([self.remain_Dvs.get(tid, 0.0) / self._config.p_init_dv])
-                        
-                        teammate_data.append(np.concatenate([
-                            self._symlog(rel_pos), 
-                            self._symlog(rel_vel), 
-                            t_fuel
-                        ]))
+                        teammate_data.append(np.concatenate([self._symlog(rel_pos), self._symlog(rel_vel), t_fuel]))
                     else:
                         teammate_data.append(np.zeros(7))
             
+            # 拼接: [Self(8), Target(3*Ne), Teammates(...)]
+            obs_list = [alt_dev, pos_dir, vel_sym, fuel] + target_feat
             if teammate_data:
                 obs_list.append(np.concatenate(teammate_data))
-                
+
             observations[agent_id] = np.concatenate(obs_list)
 
-        # 逃逸者观测保持原样
         for eid in self.evader_ids:
             if eid in all_states:
                 observations[eid] = all_states[eid]
