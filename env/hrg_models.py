@@ -21,6 +21,10 @@ class HRG_Student_Encoder(nn.Module):
         self.num_teammates = env_cfg.num_p - 1
         self.hidden_dim = hidden_dim
         
+        # --- 0. 输入归一化层 ---
+        total_obs_dim = self_input_dim + teammate_input_dim * self.num_teammates
+        self.input_norm = nn.LayerNorm(total_obs_dim)
+
         # --- A. 感知层 (Perception) ---
         self.self_enc = nn.Sequential(nn.Linear(self_input_dim, hidden_dim), nn.Tanh()) 
         self.teammate_enc = nn.Sequential(nn.Linear(teammate_input_dim, hidden_dim), nn.Tanh())
@@ -39,13 +43,12 @@ class HRG_Student_Encoder(nn.Module):
     def forward(self, obs, history_feats):
         batch_size = obs.shape[0]
         
-        # --- 1. 数据解析 ---
-        self_raw = obs[:, :8]
-        teammates_raw = obs[:, 8:].view(batch_size, self.num_teammates, 7)
+        # --- 1. 输入归一化 ---
+        obs_normalized = self.input_norm(obs)
 
-        # --- 2. Symlog 归一化 ---
-        self_in = symlog(self_raw)
-        teammates_in = symlog(teammates_raw)
+        # --- 2. 数据解析 ---
+        self_in = obs_normalized[:, :8]
+        teammates_in = obs_normalized[:, 8:].view(batch_size, self.num_teammates, 7)
         
         # --- 3. 编码 (Perception) ---
         self_emb = self.self_enc(self_in) # [B, H]
@@ -90,6 +93,7 @@ class Aligned_Teacher(nn.Module):
     def __init__(self, priv_obs_dim, student_out_dim):
         super().__init__()
         self.net = nn.Sequential(
+            nn.LayerNorm(priv_obs_dim), # 在输入端进行归一化
             nn.Linear(priv_obs_dim, 512),
             nn.LayerNorm(512),
             nn.ReLU(),
@@ -101,5 +105,5 @@ class Aligned_Teacher(nn.Module):
         )
     
     def forward(self, priv_obs):
-        # 对上帝视角的特权信息也进行symlog，以加速收敛
-        return self.net(symlog(priv_obs))
+        # 直接将特权信息传入网络
+        return self.net(priv_obs)

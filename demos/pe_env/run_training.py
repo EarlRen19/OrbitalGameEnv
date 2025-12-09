@@ -25,11 +25,11 @@ NEW_REWARD_DEFAULTS = {
     "reward_dist_weight": 0.1,   
     "reward_time_weight": 0.03,
     "reward_formation_weight": 0.04,
-    "reward_fuel_weight": 0.05,     # [重要] 单步燃料惩罚 
+    "reward_fuel_weight": 0.03,     # 单步燃料惩罚 
     "reward_advantage_weight": 0.002,
     "capture_reward": 30.0,         # 适当提高成功奖励，保持正负激励平衡
-    "reward_timeout_penalty": -12,   # 超时也给惩罚，迫使它在省油和快速之间权衡
-    "reward_fuelout_penalty": -15, # [重要] 加大燃料耗尽惩罚 
+    "reward_timeout_penalty": -12,   # 超时惩罚，迫使它在省油和快速之间权衡
+    "reward_fuelout_penalty": -15, # 加大燃料耗尽惩罚 
 }
 
 def main():

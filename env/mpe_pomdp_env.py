@@ -1,4 +1,3 @@
-#此处是部分可观的环境，对应的训练脚本是train_pomdp.py
 from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
@@ -6,47 +5,75 @@ from gymnasium import spaces
 from collections import deque
 import torch
 import datetime
+import ctypes
+import os
 
-# 导入父类环境和配置
+# 导入父类
 from .mpe_env import MPEEnv, MPEEnvCfg
 
-# 导入新的lambert求解器
+# ================= Ctypes Interface Start =================
+# 尝试加载库，失败则回退到 ECI
 try:
-    from lambert_solver import solve_lambert
-except ImportError:
-    print("\033[93mWarning: C++ Lambert solver not found. Lambert-based rewards will be disabled.\033[0m")
-    solve_lambert = None
+    # 请根据实际路径修改
+    so_path = "/home/star/Downloads/gemini-cli-main/OrbitalGameEnv/demos/OrbitLib/so/X86/libOrbit.so"
+    if not os.path.exists(so_path):
+        # 尝试相对路径
+        so_path = os.path.join(os.path.dirname(__file__), "..", "OrbitLib", "so", "X86", "libOrbit.so")
+    
+    if os.path.exists(so_path):
+        orbit_lib_c = ctypes.CDLL(so_path)
+    else:
+        raise FileNotFoundError("libOrbit.so not found")
+        
+except Exception as e:
+    print(f"[93mWarning: Failed to load libOrbit.so ({e}). LVLH transformation disabled.")
+    orbit_lib_c = None
+
+if orbit_lib_c:
+    orbit_lib_c.DCM_J2000_to_LVLH.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.POINTER((ctypes.c_double * 3) * 3)]
+    orbit_lib_c.DCM_J2000_to_LVLH.restype = None
+
+def get_lvlh_dcm(state_j2000: np.ndarray) -> np.ndarray | None:
+    if not orbit_lib_c: return None
+    rv_in = state_j2000.astype(np.float64)
+    dcm_out = ((ctypes.c_double * 3) * 3)()
+    orbit_lib_c.DCM_J2000_to_LVLH(rv_in.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), dcm_out)
+    return np.array([[dcm_out[i][j] for j in range(3)] for i in range(3)])
+
+def eci_to_lvlh_relative(observer_state, target_pos, target_vel=None):
+    """ 计算目标相对于观察者的 LVLH 坐标 """
+    dcm = get_lvlh_dcm(observer_state)
+    observer_pos = observer_state[:3]
+    rel_pos_eci = target_pos - observer_pos
+    
+    if dcm is None: # 回退模式
+        rel_vel_eci = (target_vel - observer_state[3:]) if target_vel is not None else None
+        return rel_pos_eci, rel_vel_eci
+
+    rel_pos_lvlh = dcm @ rel_pos_eci
+    rel_vel_lvlh = None
+    if target_vel is not None:
+        rel_vel_eci = target_vel - observer_state[3:]
+        rel_vel_lvlh = dcm @ rel_vel_eci
+        
+    return rel_pos_lvlh, rel_vel_lvlh
+# ================= Ctypes Interface End =================
+
 
 @dataclass
 class MPE_POMDP_EnvCfg(MPEEnvCfg):
-    """加入POMDP和Transformer的特定参数"""
     use_partial_obs: bool = True
     obs_interval: int = 2
-    history_len: int = 20 # History length for Transformer
-
-    # Lambert奖励配置 
+    history_len: int = 20
+    # Lambert 相关参数保留...
     use_lambert_reward: bool = True
     lambert_reward_weight: float = 5
-    lambert_transfer_time: float = 7200 #Lambert转移时间（秒）
-    mu: float = 3.986004418e14
-    GEO_ORBIT_RADIUS: float = 42164000.0 # 地球同步轨道名义半径 (米)
+    GEO_ORBIT_RADIUS: float = 42164000.0
 
 class MPE_POMDP_Env(MPEEnv):
-    """
-    部分可观MPE环境，为基于Transformer的智能体准备数据。
-    - 历史记录(History): 存储原始物理坐标。
-    - 观测(Observation): 包含自身状态和相对于自身的队友状态。
-    - Info字典: 为每个智能体提供一个定制的、相对的、经过symlog处理的逃逸者历史轨迹，以及一个用于Transformer的掩码。
-    """
     @staticmethod
     def _symlog(x):
-        """对称对数函数，用于归一化。"""
         return np.sign(x) * np.log(np.abs(x) + 1.0)
-
-    @staticmethod
-    def _inv_symlog(y):
-        """对称对数函数的逆函数。"""
-        return np.sign(y) * (np.exp(np.abs(y)) - 1.0)
 
     def __init__(self, config: MPE_POMDP_EnvCfg = MPE_POMDP_EnvCfg()):
         super().__init__(config)
@@ -57,71 +84,84 @@ class MPE_POMDP_Env(MPEEnv):
             self.obs_counters = {f'e_{i}': 0 for i in range(self._config.num_e)}
             self.evader_history_mask_buffers = {f'e_{i}': deque(maxlen=self._config.history_len) for i in range(self._config.num_e)}
 
-            # V4版观测空间：只包含自身和队友信息
             self.observation_spaces = {}
             for a in self.possible_agents:
                 if a.startswith('p_'):
-                    # 自身信息: 高度差(1), 方向(3), 速度(3), 燃料(1) = 8
                     self_obs_dim = 8
-                    # 队友信息: 相对位置(3), 相对速度(3), 燃料(1) = 7
                     teammates_obs_dim = 7 * (self._config.num_p - 1)
-                    
                     obs_shape = (self_obs_dim + teammates_obs_dim,)
                     self.observation_spaces[a] = spaces.Box(-np.inf, np.inf, shape=obs_shape)
-                else: # 逃逸者保持不变
+                else:
                     self.observation_spaces[a] = spaces.Box(-np.inf, np.inf, shape=(6,))
+
+    def _get_privileged_state(self):
+        """辅助函数：计算基于 Anchor LVLH 的特权观测"""
+        privileged_components = []
+        anchor_id = self.evader_ids[0]
+        
+        anchor_state = np.zeros(6)
+        anchor_dcm = None
+
+        if anchor_id in self.states:
+            anchor_state = self.states[anchor_id]
+            anchor_dcm = get_lvlh_dcm(anchor_state)
+            # Anchor 自身依然保留 symlog 的绝对状态 (或者改为相对于GEO理想轨道的偏差)
+            privileged_components.append(self._symlog(anchor_state))
+        else:
+            privileged_components.append(np.zeros(6))
+
+        # 顺序：所有追击者 -> 剩余逃逸者
+        agent_order = self.pursuer_ids + [eid for eid in self.evader_ids if eid != anchor_id]
+        
+        for agent_id in agent_order:
+            if agent_id in self.states:
+                target_state = self.states[agent_id]
+                
+                # 如果有DCM，则转为LVLH相对；否则使用ECI相对
+                if anchor_dcm is not None:
+                    diff_pos = target_state[:3] - anchor_state[:3]
+                    diff_vel = target_state[3:] - anchor_state[3:]
+                    rel_pos = anchor_dcm @ diff_pos
+                    rel_vel = anchor_dcm @ diff_vel
+                    rel_state = np.concatenate([rel_pos, rel_vel])
+                else:
+                    rel_state = target_state - anchor_state
+                
+                privileged_components.append(self._symlog(rel_state))
+            else:
+                privileged_components.append(np.zeros(6))
+        
+        return np.concatenate(privileged_components)
 
     def reset(self, seed=None, options=None):
         observations, infos = super().reset(seed, options)
 
         if self._config.use_partial_obs:
             self.obs_counters = {f'e_{i}': 0 for i in range(self._config.num_e)}
-            
-            for evader_id in [f'e_{i}' for i in range(self._config.num_e)]:
+            for evader_id in self.evader_ids:
                 self.evader_history_buffers[evader_id].clear()
                 self.evader_history_mask_buffers[evader_id].clear()
                 if evader_id in self.states:
-                    # [修改]：直接存原始物理状态
                     initial_state = self.states[evader_id]
                     for _ in range(self._config.history_len):
                         self.evader_history_buffers[evader_id].append(initial_state)
-                        # 初始时都视为“真实”观测的填充
                         self.evader_history_mask_buffers[evader_id].append(1.0)
 
             self._update_history_and_prepare_data()
             observations = self._get_observations()
 
-            # 为所有智能体准备特权信息 (新的混合坐标系：锚点+相对)
-            privileged_components = []
-            anchor_id = self.evader_ids[0]
-            if anchor_id in self.states:
-                anchor_state = self.states[anchor_id]
-                privileged_components.append(self._symlog(anchor_state))
-            else:
-                anchor_state = np.zeros(6)
-                privileged_components.append(anchor_state)
-
-            # 其他智能体使用相对于锚点的状态
-            agent_order = self.pursuer_ids + [eid for eid in self.evader_ids if eid != anchor_id]
-            for agent_id in agent_order:
-                if agent_id in self.states:
-                    relative_state = self.states[agent_id] - anchor_state
-                    privileged_components.append(self._symlog(relative_state))
-                else:
-                    privileged_components.append(np.zeros(6))
-            
-            privileged_state = np.concatenate(privileged_components)
-
-            for agent in self.agents:
-                if agent.startswith('p_'):
-                    if agent not in infos: infos[agent] = {}
-                    infos[agent]['privileged_state'] = privileged_state
+            # 使用新的 LVLH 特权观测
+            privileged_state = self._get_privileged_state()
+            for agent in self.pursuer_ids:
+                if agent not in infos: infos[agent] = {}
+                infos[agent]['privileged_state'] = privileged_state
 
         return observations, infos
 
     def step(self, actions):
+        self.step_count += 1
+        # 在step执行前，基于上一步的状态准备好给agent的输入
         if self._config.use_partial_obs:
-            # 在step执行前，基于上一步的状态准备好给agent的输入
             self._update_history_and_prepare_data()
         
         # (与父类MPEEnv相同的动力学和奖励计算)
@@ -145,52 +185,31 @@ class MPE_POMDP_Env(MPEEnv):
             self.states[a] = new_state
         self._time = self._time + datetime.timedelta(seconds=self._config.dt)
 
+        # 观测和奖励计算
         observations = self._get_observations()
         rewards, debug_reward_info = self._get_rewards(clipped_actions)
         terminations, termination_reasons = self._get_terminations()
         truncations = self._get_truncations()
         self.terminations, self.truncations = terminations, truncations
 
+        # 准备Infos
         current_infos = {a: self.infos.get(a, {}) for a in self.possible_agents if a in self.agents}
-        if any(terminations.values()):
+        
+        if any(terminations.values()) or any(truncations.values()):
             self.episode_statistics['total_episodes'] += 1
             reason = list(termination_reasons.values())[0] if termination_reasons else 'unknown'
             
             if reason == 'capture_success': self.episode_statistics['success_count'] += 1
-            elif reason == 'timeout':
-                self.episode_statistics['timeout_count'] += 1
-                for a in self.agents:
-                    if a.startswith('p_'): rewards[a] += self._config.reward_timeout_penalty
-            elif reason == 'fuel_out':
-                self.episode_statistics['fuelout_count'] += 1
-                for a in self.agents:
-                    if a.startswith('p_'): rewards[a] += self._config.reward_fuelout_penalty
+            elif reason == 'timeout': self.episode_statistics['timeout_count'] += 1
+            elif reason == 'fuel_out': self.episode_statistics['fuelout_count'] += 1
             
             if self.episode_statistics['total_episodes'] > 0:
                 self.episode_statistics['success_rate'] = self.episode_statistics['success_count'] / self.episode_statistics['total_episodes']
 
-        # 为Critic准备特权信息 (新的混合坐标系：锚点+相对)
-        privileged_components = []
-        anchor_id = self.evader_ids[0]
-        if anchor_id in self.states:
-            anchor_state = self.states[anchor_id]
-            privileged_components.append(self._symlog(anchor_state))
-        else:
-            anchor_state = np.zeros(6)
-            privileged_components.append(anchor_state)
-
-        # 其他智能体使用相对于锚点的状态
-        agent_order = self.pursuer_ids + [eid for eid in self.evader_ids if eid != anchor_id]
-        for agent_id in agent_order:
-            if agent_id in self.states:
-                relative_state = self.states[agent_id] - anchor_state
-                privileged_components.append(self._symlog(relative_state))
-            else:
-                privileged_components.append(np.zeros(6))
-        
-        privileged_state = np.concatenate(privileged_components)
-
-        for agent in self.agents:
+        # 更新特权信息和最终观测
+        privileged_state = self._get_privileged_state()
+        for agent in self.possible_agents:
+            if agent not in current_infos: current_infos[agent] = {}
             current_infos[agent]['termination_reason'] = termination_reasons.get(agent, None)
             current_infos[agent]['episode_statistics'] = self.episode_statistics.copy()
             if self._config.debug_rewards and agent in debug_reward_info:
@@ -205,105 +224,105 @@ class MPE_POMDP_Env(MPEEnv):
 
         return observations, rewards, self.terminations, self.truncations, current_infos
 
-    def _get_rewards(self, actions):
-        # 继承父类奖励逻辑
-        return super()._get_rewards(actions)
 
     def _get_observations(self):
         if not self._config.use_partial_obs:
             return super()._get_observations()
 
         observations = {}
-        all_states = {agent_id: self.states[agent_id] for agent_id in self.possible_agents if agent_id in self.states}
-        all_fuels = self.remain_Dvs
+        all_states = {aid: self.states[aid] for aid in self.possible_agents if aid in self.states}
         
-        for agent_id in self.possible_agents:
-            if agent_id not in self.states: continue
+        for agent_id in self.pursuer_ids:
+            if agent_id not in all_states: continue
             
-            if agent_id.startswith('p_'):
-                obs_components = []
-                my_state = all_states[agent_id]
+            my_state = all_states[agent_id]
+            
+            # 1. 自身信息 (Symlog处理)
+            my_pos = my_state[:3]
+            my_vel = my_state[3:]
+            my_dist = np.linalg.norm(my_pos)
+            alt_dev = self._symlog(np.array([my_dist - self._config.GEO_ORBIT_RADIUS]))
+            pos_dir = my_pos / (my_dist + 1e-6)
+            vel_sym = self._symlog(my_vel)
+            fuel = np.array([self.remain_Dvs.get(agent_id, 0.0) / self._config.p_init_dv])
+            
+            obs_list = [alt_dev, pos_dir, vel_sym, fuel]
+
+            # 2. 队友信息 (LVLH 转换)
+            teammate_data = []
+            for i in range(self._config.num_p):
+                tid = f'p_{i}'
+                if tid != agent_id:
+                    if tid in all_states:
+                        t_state = all_states[tid]
+                        # 转换！
+                        rel_pos, rel_vel = eci_to_lvlh_relative(my_state, t_state[:3], t_state[3:])
+                        t_fuel = np.array([self.remain_Dvs.get(tid, 0.0) / self._config.p_init_dv])
+                        
+                        teammate_data.append(np.concatenate([
+                            self._symlog(rel_pos), 
+                            self._symlog(rel_vel), 
+                            t_fuel
+                        ]))
+                    else:
+                        teammate_data.append(np.zeros(7))
+            
+            if teammate_data:
+                obs_list.append(np.concatenate(teammate_data))
                 
-                # 1. 自身信息 (8维)
-                my_pos = my_state[:3]
-                my_vel = my_state[3:]
-                my_dist_to_center = np.linalg.norm(my_pos)
-                alt_deviation = my_dist_to_center - self._config.GEO_ORBIT_RADIUS
-                pos_direction = my_pos / (my_dist_to_center + 1e-6)
-                fuel_ratio = np.array([all_fuels.get(agent_id, 0.0) / self._config.p_init_dv])
-                obs_components.extend([np.array([alt_deviation]), pos_direction, my_vel, fuel_ratio])
+            observations[agent_id] = np.concatenate(obs_list)
 
-                # 2. 队友信息 (每个7维)
-                teammate_info = []
-                for i in range(self._config.num_p):
-                    teammate_id = f'p_{i}'
-                    if teammate_id != agent_id:
-                        if teammate_id in all_states:
-                            teammate_state = all_states[teammate_id]
-                            rel_state = teammate_state - my_state
-                            teammate_fuel = np.array([all_fuels.get(teammate_id, 0.0) / self._config.p_init_dv])
-                            teammate_info.append(np.concatenate([rel_state, teammate_fuel]))
-                        else:
-                            teammate_info.append(np.zeros(7))
-                if teammate_info:
-                    obs_components.append(np.concatenate(teammate_info))
-
-                # 注意：对手信息已从此向量中移除
-                observations[agent_id] = np.concatenate(obs_components)
-            else: # 逃逸者
-                observations[agent_id] = self.states[agent_id]
-        
+        # 逃逸者观测保持原样
+        for eid in self.evader_ids:
+            if eid in all_states:
+                observations[eid] = all_states[eid]
+                
         return observations
 
     def _update_history_and_prepare_data(self):
-        """
-        核心函数：更新历史缓冲区，并为每个追踪者准备相对的、symlog处理过的轨迹数据。
-        """
-        for evader_id in [f'e_{i}' for i in range(self._config.num_e)]:
+        # 这里的逻辑与你之前的代码一致，通过 eci_to_lvlh_relative 处理历史数据
+        # 确保 history buffer 更新逻辑正确
+        for evader_id in self.evader_ids:
             if evader_id not in self.states: continue
 
             self.obs_counters[evader_id] += 1
-            history_buffer = self.evader_history_buffers[evader_id]
-            mask_buffer = self.evader_history_mask_buffers[evader_id]
+            h_buf = self.evader_history_buffers[evader_id]
+            m_buf = self.evader_history_mask_buffers[evader_id]
             
-            # 如果是观测步，存入真实状态和掩码1；否则，重复上一帧状态并存入掩码0
+            # 更新 Buffer (存绝对 ECI)
             if self.obs_counters[evader_id] % self._config.obs_interval == 0:
-                history_buffer.append(self.states[evader_id])
-                mask_buffer.append(1.0)
+                h_buf.append(self.states[evader_id])
+                m_buf.append(1.0)
             else:
-                if len(history_buffer) > 0:
-                    history_buffer.append(history_buffer[-1]) # 重复最后一个已知状态
-                    mask_buffer.append(0.0) # 标记为非真实观测
-                else: # 缓冲区为空的罕见情况
-                    history_buffer.append(self.states[evader_id])
-                    mask_buffer.append(1.0)
+                if h_buf:
+                    h_buf.append(h_buf[-1])
+                    m_buf.append(0.0)
+                else:
+                    h_buf.append(self.states[evader_id])
+                    m_buf.append(1.0)
 
-            # 将历史轨迹（绝对物理坐标）转换为numpy数组
-            history_abs_real = np.array(list(history_buffer)) # Shape: [history_len, 6]
-            history_mask = np.array(list(mask_buffer)) # Shape: [history_len]
+            # 准备 Transformer 输入 (转为相对 LVLH)
+            hist_eci = np.array(list(h_buf))
+            hist_mask = np.array(list(m_buf))
 
-            # 为每个追踪者生成其“相对视野”下的历史轨迹
-            for p_agent_id in [f'p_{i}' for i in range(self._config.num_p)]:
-                if p_agent_id in self.states:
-                    my_current_pos = self.states[p_agent_id][:3]
-                    my_current_vel = self.states[p_agent_id][3:]
-                    my_current_state_vec = np.concatenate([my_current_pos, my_current_vel])
-
-                    # [核心逻辑]：输入 = Symlog(Evader历史 - 我当前状态)
-                    rel_history_real = history_abs_real - my_current_state_vec
-                    rel_history_symlog = self._symlog(rel_history_real)
-
-                    # 将处理好的数据放入info字典
-                    sl_data = {
-                        f'history_input_{evader_id}': rel_history_symlog,
-                        f'history_mask_{evader_id}': history_mask,
-                    }
+            for pid in self.pursuer_ids:
+                if pid in self.states:
+                    my_state = self.states[pid]
                     
-                    if p_agent_id in self.infos:
-                        self.infos[p_agent_id].update(sl_data)
-                    else:
-                        self.infos[p_agent_id] = sl_data
-
+                    processed_hist = []
+                    for h_state in hist_eci:
+                        rp, rv = eci_to_lvlh_relative(my_state, h_state[:3], h_state[3:])
+                        processed_hist.append(np.concatenate([rp, rv]))
+                    
+                    rel_hist_symlog = self._symlog(np.array(processed_hist))
+                    
+                    # 存入 self.infos 供 step 合并
+                    if pid not in self.infos: self.infos[pid] = {}
+                    self.infos[pid].update({
+                        f'history_input_{evader_id}': rel_hist_symlog,
+                        f'history_mask_{evader_id}': hist_mask
+                    })
+    
     def get_evader_actions(self):
         """
         获取逃逸者的动作。

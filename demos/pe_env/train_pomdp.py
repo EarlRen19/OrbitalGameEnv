@@ -91,6 +91,10 @@ class HRG_ActorCritic(nn.Module):
         
         d_model = 128
         history_input_dim = 6
+        
+        # --- 新增: 输入归一化层 ---
+        self.history_norm = nn.LayerNorm(history_input_dim)
+        
         self.history_embedding = layer_init(nn.Linear(history_input_dim, d_model))
         self.pos_encoder = PositionalEncoding(d_model, max_len=env_cfg.history_len)
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=4, dim_feedforward=256, batch_first=True)
@@ -110,6 +114,7 @@ class HRG_ActorCritic(nn.Module):
         )
         
         self.critic = nn.Sequential(
+            nn.LayerNorm(priv_obs_dim), # 在输入端对特权信息进行归一化
             layer_init(nn.Linear(priv_obs_dim, 512)), nn.LayerNorm(512), nn.ReLU(),
             layer_init(nn.Linear(512, 256)), nn.LayerNorm(256), nn.ReLU(),
             layer_init(nn.Linear(256, 1), std=1.0)
@@ -120,7 +125,8 @@ class HRG_ActorCritic(nn.Module):
         self.register_buffer("action_bias", torch.tensor((action_space.high + action_space.low) / 2.0, dtype=torch.float32))
 
     def get_history_feats(self, history, history_mask=None):
-        embedded_history = self.history_embedding(history)
+        normed_history = self.history_norm(history)
+        embedded_history = self.history_embedding(normed_history)
         pos_encoded_history = self.pos_encoder(embedded_history.permute(1, 0, 2)).permute(1, 0, 2)
         src_key_padding_mask = (history_mask == 0) if history_mask is not None else None
         transformer_output = self.transformer_encoder(pos_encoded_history, src_key_padding_mask=src_key_padding_mask)
@@ -236,6 +242,20 @@ def train(cfg: TrainConfig, env_cfg: MPE_POMDP_EnvCfg, all_params: dict):
 
     run_dir = Path("runs") / cfg.run_name
     run_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 将所有参数写入文件
+    params_path = run_dir / "all_params.txt"
+    with open(params_path, "w") as f:
+        f.write("--- TrainConfig ---\n")
+        for key, value in vars(cfg).items():
+            f.write(f"{key}: {value}\n")
+        f.write("\n--- MPE_POMDP_EnvCfg ---\n")
+        for key, value in vars(env_cfg).items():
+            f.write(f"{key}: {value}\n")
+        f.write("\n--- All CLI Params ---\n")
+        for key, value in sorted(all_params.items()):
+            f.write(f"{key}: {value}\n")
+
     writer = SummaryWriter(str(run_dir))
     progress_path = run_dir / "curriculum_progress_log.txt"
     checkpoint_dir = run_dir / "checkpoints"

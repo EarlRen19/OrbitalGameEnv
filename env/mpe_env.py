@@ -70,6 +70,9 @@ class MPEEnv(PEEnv):
             'success_rate': 0.0
         }
 
+        # 用于控制打印频率的步数计数器
+        self.step_count = 0
+
     def observe(self, agent):
         return self._get_observations().get(agent)
 
@@ -329,8 +332,8 @@ class MPEEnv(PEEnv):
                         debug_reward_info[agent_id]['r_capture'] = capture_bonus
                         debug_reward_info[agent_id]['final_total'] = rewards[agent_id]
 
-        if self._config.debug_rewards and any(debug_reward_info.values()):
-            print(f"\n--- Step @ {self._time} Reward Debug ---")
+        if self._config.debug_rewards and any(debug_reward_info.values()) and self.step_count % 20 == 0:
+            print(f"\n--- Step @ {self._time} Reward Debug (Step: {self.step_count}) ---")
             for agent_id, reward_data in debug_reward_info.items():
                 if reward_data:
                     reward_str = ", ".join([f"{k}: {v:.4f}" for k, v in reward_data.items()])
@@ -405,6 +408,7 @@ class MPEEnv(PEEnv):
 
     def step(self, actions: Dict[str, np.ndarray]):
         """重写step方法,支持终止条件分类和课程学习统计"""
+        self.step_count += 1
         for a in self.agents:
             if a.startswith('p_'):
                 dv_step = self._config.p_dv_step
