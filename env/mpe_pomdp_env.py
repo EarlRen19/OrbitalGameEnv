@@ -270,16 +270,21 @@ class MPE_POMDP_Env(MPEEnv):
             history_buffer = self.evader_history_buffers[evader_id]
             mask_buffer = self.evader_history_mask_buffers[evader_id]
             
-            # 如果是观测步，存入真实状态和掩码1；否则，重复上一帧状态并存入掩码0
+            # 如果是观测步，存入真实位置(速度置零)和掩码1；否则，重复上一帧状态并存入掩码0
             if self.obs_counters[evader_id] % self._config.obs_interval == 0:
-                history_buffer.append(self.states[evader_id])
+                true_state = self.states[evader_id]
+                pos_only_state = np.concatenate([true_state[:3], np.zeros(3)])
+                history_buffer.append(pos_only_state)
                 mask_buffer.append(1.0)
             else:
                 if len(history_buffer) > 0:
                     history_buffer.append(history_buffer[-1]) # 重复最后一个已知状态
                     mask_buffer.append(0.0) # 标记为非真实观测
                 else: # 缓冲区为空的罕见情况
-                    history_buffer.append(self.states[evader_id])
+                    # 第一次观测总是真实的，但同样隐藏速度
+                    true_state = self.states[evader_id]
+                    pos_only_state = np.concatenate([true_state[:3], np.zeros(3)])
+                    history_buffer.append(pos_only_state)
                     mask_buffer.append(1.0)
 
             # 将历史轨迹（绝对物理坐标）转换为numpy数组
