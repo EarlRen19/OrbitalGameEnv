@@ -70,7 +70,7 @@ class PEEnvCfg:
         Cd=2.2,
         eta=1.0,
         Propagator_Type=0,  # 二体动力学
-        Dyn_Type=1  # J2摄动（1有效，0无效）
+        Dyn_Type=0  # 无效，J2摄动
     )
 
     # 渲染

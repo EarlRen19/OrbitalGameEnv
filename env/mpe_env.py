@@ -164,7 +164,7 @@ class MPEEnv(PEEnv):
         sma_diff_ratio = (sma_p - sma_e) / (sma_e + 1e-6)
         
         # --- 3. 远场逻辑 (Far-field) ---
-        drift_product = delta_theta * sma_diff_ratio
+        drift_product = -delta_theta * sma_diff_ratio
         if drift_product > 0:
             R_Far = -1.0 - np.abs(sma_diff_ratio) * 2000.0
         else:

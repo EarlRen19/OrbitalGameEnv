@@ -1,206 +1,96 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    torch.nn.init.orthogonal_(layer.weight, std)
-    torch.nn.init.constant_(layer.bias, bias_const)
-    return layer
+def symlog(x):
+    """
+    对称对数函数，用于处理具有大范围的输入值。
+    """
+    return torch.sign(x) * torch.log(torch.abs(x) + 1.0)
 
-class Base_Student_Encoder(nn.Module):
-    """
-    基类：处理 Obs 的切分和基础 Embedding。
-    所有模型（HAFN, LSTM, MLP）都应基于对观测的相同理解。
-    """
-    def __init__(self, env_cfg, student_obs_dim, hidden_dim=128):
+class HRG_Student_Encoder(nn.Module):
+    def __init__(self, env_cfg, student_obs_dim, self_input_dim=8, target_input_dim=3, teammate_input_dim=7, hidden_dim=128):
         super().__init__()
+        self.num_p = env_cfg.num_p
         self.num_teammates = env_cfg.num_p - 1
         self.hidden_dim = hidden_dim
         
-        # 维度定义
-        # self_dim is calculated based on the observation structure in mpe_pomdp_env.py
-        # Self(8) + TargetObs(3*Ne) + Orbital(3)
-        self.self_obs_base_dim = 8
-        self.target_obs_dim = 3 * env_cfg.num_e
-        self.orbital_feat_dim = 3
-        self.self_dim = self.self_obs_base_dim + self.target_obs_dim + self.orbital_feat_dim
-        self.teammate_dim = 7
+        self.self_input_dim = self_input_dim
+        self.target_obs_dim = target_input_dim * env_cfg.num_e
+        self.teammate_input_dim = teammate_input_dim
         
-        # 基础编码器 (MLP)
-        self.self_embed = nn.Sequential(
-            nn.Linear(self.self_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU()
-        )
+        self.input_norm = nn.LayerNorm(student_obs_dim)
+
+        # A. 感知层
+        # 1. 自身编码
+        self.self_enc = nn.Sequential(nn.Linear(self_input_dim, hidden_dim), nn.Tanh())
         
+        # 2. 目标即时观测编码 (新增)
+        # 这代表了“不完美但实时的视觉信息”
+        self.target_enc = nn.Sequential(nn.Linear(self.target_obs_dim, hidden_dim), nn.Tanh())
+        
+        # 3. 队友编码
+        self.teammate_enc = nn.Sequential(nn.Linear(teammate_input_dim, hidden_dim), nn.Tanh())
+
+        # B. HLS 
+        # 我们需要融合 Self 和 TargetObs 作为 Query
+        self.fusion_layer = nn.Linear(hidden_dim * 2, hidden_dim) # 融合 Self + TargetObs
+        
+        self.hls_query = nn.Linear(hidden_dim, hidden_dim)
+        self.hls_key_team = nn.Linear(hidden_dim, hidden_dim)
+        self.hls_key_evader = nn.Linear(hidden_dim, hidden_dim) # 来自 History Transformer
+        
+        self.output_dim = hidden_dim + hidden_dim
+
+    def forward(self, obs, history_feats):
+        batch_size = obs.shape[0]
+        obs_normalized = self.input_norm(obs)
+
+        # 切分数据
+        # [Self(8) | Target(3*Ne) | Teammates(7*(Np-1)) | Orbital(3)]
+        idx_self = self.self_input_dim
+        idx_target = idx_self + self.target_obs_dim
+        idx_teammates = idx_target + self.teammate_input_dim * self.num_teammates
+        
+        self_in = obs_normalized[:, :idx_self]
+        target_in = obs_normalized[:, idx_self:idx_target]
+        
+        # 确保在没有队友时也能正常工作
         if self.num_teammates > 0:
-            self.teammate_embed = nn.Sequential(
-                nn.Linear(self.teammate_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.ReLU()
-            )
-
-    def split_and_embed_obs(self, obs):
-        """
-        输入: [Batch, Total_Obs_Dim]
-        输出: 
-           self_emb: [Batch, 1, Hidden]
-           team_embs: [Batch, Num_Teammates, Hidden] (如果有队友)
-        """
-        # The observation structure is:
-        # [self_base(8), targets(3*Ne), teammates(7*(Np-1)), orbital(3)]
-        # The base encoder combines self_base, targets, and orbital features.
-        
-        self_part = torch.cat([
-            obs[:, :self.self_obs_base_dim],
-            obs[:, self.self_obs_base_dim : self.self_obs_base_dim + self.target_obs_dim],
-            obs[:, self.self_obs_base_dim + self.target_obs_dim + self.teammate_dim * self.num_teammates:]
-        ], dim=1)
-
-        self_emb = self.self_embed(self_part).unsqueeze(1) # [B, 1, H]
-        
-        team_embs = None
-        if self.num_teammates > 0:
-            teammates_part = obs[:, self.self_obs_base_dim + self.target_obs_dim : self.self_obs_base_dim + self.target_obs_dim + self.teammate_dim * self.num_teammates]
-            teammates_in = teammates_part.view(-1, self.num_teammates, self.teammate_dim)
-            team_embs = self.teammate_embed(teammates_in) # [B, N_t, H]
-            
-        return self_emb, team_embs
-
-# ==========================================
-# 1. HAFN Encoder (Proposed Method)
-# ==========================================
-class HAFN_Encoder(Base_Student_Encoder):
-    def __init__(self, env_cfg, student_obs_dim, history_input_dim=6, hidden_dim=128):
-        super().__init__(env_cfg, student_obs_dim, hidden_dim)
-        
-        # --- Stage 1: Entity Attention (处理空间/编队关系) ---
-        self.entity_attn = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=4, batch_first=True)
-        self.norm_entity = nn.LayerNorm(hidden_dim)
-        
-        # --- Stage 2: History Cross Attention (处理时序/不完美观测) ---
-        self.history_embed = nn.Sequential(
-            nn.Linear(history_input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU()
-        )
-
-        # [Reverted]: Using a learnable, zero-initialized positional encoding
-        self.pos_embed = nn.Parameter(torch.zeros(1, env_cfg.history_len, hidden_dim))
-        
-        # Cross Attention: Query来自当前状态, Key/Value来自历史
-        self.cross_attn = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=4, batch_first=True)
-        self.norm_cross = nn.LayerNorm(hidden_dim)
-        
-        # [Reverted]: No FFN layer
-        
-        # The output is a simple concatenation of the two contexts
-        self.output_dim = hidden_dim * 2 
-
-    def forward(self, obs, history, history_mask):
-        # === 1. Entity Self-Attention (Pre-LN) ===
-        self_emb, team_embs = self.split_and_embed_obs(obs)
-        
-        if team_embs is not None:
-            tokens = torch.cat([self_emb, team_embs], dim=1)
-            normed_tokens = self.norm_entity(tokens)
-            attn_out, _ = self.entity_attn(normed_tokens, normed_tokens, normed_tokens)
-            entity_ctx = (tokens + attn_out)[:, 0:1, :]
+            teammates_in = obs_normalized[:, idx_target:idx_teammates].view(batch_size, self.num_teammates, self.teammate_input_dim)
+            teammate_embs = self.teammate_enc(teammates_in) # [B, Np-1, H]
+            team_context = teammate_embs.mean(dim=1)
         else:
-            entity_ctx = self_emb
-            
-        # === 2. History Processing (Attention only) ===
-        B, T, _ = history.shape
-        hist_emb = self.history_embed(history)
-        # [Reverted]: Add the learnable position embedding
-        hist_emb = hist_emb + self.pos_embed[:, :T, :]
-        
-        key_padding_mask = (history_mask == 0)
-        
-        # Cross-Attention (Post-LN style, as it was in that version)
-        attn_out, attn_weights = self.cross_attn(
-            query=entity_ctx,
-            key=hist_emb,
-            value=hist_emb,
-            key_padding_mask=key_padding_mask
-        )
-        # [Reverted]: Simple Add & Norm, no FFN
-        history_ctx = self.norm_cross(entity_ctx + attn_out)
-        
-        # === 3. Final Output ===
-        output = torch.cat([entity_ctx.squeeze(1), history_ctx.squeeze(1)], dim=-1)
-        return output, attn_weights
+            team_context = torch.zeros(batch_size, self.hidden_dim, device=obs.device)
 
-# ==========================================
-# 2. LSTM Encoder (Strong Baseline)
-# ==========================================
-class LSTM_Encoder(Base_Student_Encoder):
-    def __init__(self, env_cfg, student_obs_dim, history_input_dim=6, hidden_dim=128):
-        super().__init__(env_cfg, student_obs_dim, hidden_dim)
+        # orbital_in = obs_normalized[:, idx_teammates:] # 暂时切分出来但未使用
         
-        # LSTM to process history
-        self.lstm = nn.LSTM(input_size=history_input_dim, hidden_size=hidden_dim, 
-                            num_layers=1, batch_first=True)
+        # 编码
+        self_emb = self.self_enc(self_in)       # [B, H]
+        target_emb = self.target_enc(target_in) # [B, H]
         
-        # Fusion layer to combine self and team context
-        self.obs_fusion = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU()
-        )
+        # HLS 逻辑升级
+        # 现在的不仅包含燃料状态，还包含那个残缺的目标位置
+        # 这有助于网络判断：如果看不到目标（Obs是旧的），是不是该多信一点 History？
+        self_context = torch.cat([self_emb, target_emb], dim=-1)
+        self_context = F.relu(self.fusion_layer(self_context)) # [B, H]
         
-        self.output_dim = hidden_dim * 2
+        Q = self.hls_query(self_context).unsqueeze(1)
+        K_team = self.hls_key_team(team_context).unsqueeze(1)
+        K_evader = self.hls_key_evader(history_feats).unsqueeze(1)
+        
+        K = torch.cat([K_team, K_evader], dim=1)
+        scores = torch.bmm(Q, K.transpose(1, 2)) / (self.hidden_dim ** 0.5)
+        attn_weights = F.softmax(scores, dim=-1)
+        
+        V = torch.stack([team_context, history_feats], dim=1)
+        final_context = torch.bmm(attn_weights, V).squeeze(1)
+        
+        # 输出：融合后的自我感知 + 博弈上下文
+        student_features = torch.cat([self_context, final_context], dim=-1)
+        
+        return student_features, attn_weights
 
-    def forward(self, obs, history, history_mask):
-        # 1. Process current observation
-        self_emb, team_embs = self.split_and_embed_obs(obs) # self_emb: [B, 1, H]
-        
-        if team_embs is not None:
-            # Pool teammates info
-            team_ctx = team_embs.mean(dim=1) # [B, H]
-        else:
-            # If no teammates, use zeros
-            team_ctx = torch.zeros(self_emb.shape[0], self.hidden_dim, device=obs.device)
-            
-        # Fuse self and team context while preserving self's independence
-        obs_ctx_combined = torch.cat([self_emb.squeeze(1), team_ctx], dim=1) # [B, 2*H]
-        obs_ctx = self.obs_fusion(obs_ctx_combined) # [B, H]
-
-        # 2. Process history with LSTM
-        _, (h_n, c_n) = self.lstm(history)
-        hist_ctx = h_n[-1] # [B, H]
-        
-        # 3. Final output
-        output = torch.cat([obs_ctx, hist_ctx], dim=-1)
-        return output, None
-
-# ==========================================
-# 3. MLP Encoder (Simple Baseline)
-# ==========================================
-class MLP_Encoder(nn.Module):
-    def __init__(self, env_cfg, student_obs_dim, history_input_dim=6, hidden_dim=128):
-        super().__init__()
-        input_dim = student_obs_dim + env_cfg.history_len * history_input_dim
-        
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim * 2),
-            nn.LayerNorm(hidden_dim * 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim * 2, hidden_dim * 2),
-            nn.ReLU()
-        )
-        self.output_dim = hidden_dim * 2
-
-    def forward(self, obs, history, history_mask):
-        B = obs.shape[0]
-        hist_flat = history.view(B, -1)
-        combined = torch.cat([obs, hist_flat], dim=1)
-        output = self.net(combined)
-        return output, None
-
-# ==========================================
-# 4. Aligned Teacher (For Distillation)
-# ==========================================
 class Aligned_Teacher(nn.Module):
     """
     维度对齐的教师网络
@@ -209,15 +99,17 @@ class Aligned_Teacher(nn.Module):
     def __init__(self, priv_obs_dim, student_out_dim):
         super().__init__()
         self.net = nn.Sequential(
-            nn.LayerNorm(priv_obs_dim),
+            nn.LayerNorm(priv_obs_dim), # 在输入端进行归一化
             nn.Linear(priv_obs_dim, 512),
             nn.LayerNorm(512),
             nn.ReLU(),
             nn.Linear(512, 256),
             nn.LayerNorm(256),
             nn.ReLU(),
+            # 关键: 输出维度严格对齐 Student Encoder 的输出
             nn.Linear(256, student_out_dim) 
         )
     
     def forward(self, priv_obs):
+        # 直接将特权信息传入网络
         return self.net(priv_obs)
