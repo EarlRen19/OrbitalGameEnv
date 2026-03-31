@@ -28,9 +28,9 @@ It can be downloaded from https://aka.ms/vs/16/release/vc_redist.x64.exe."""
 
 __version__ = metadata.version(__package__)
 
-from oge_py._oge_py import SatState, OGESettings, OGEInterface
+from oge_py._oge_py import SatState, OGESettings, OGEInterface, ma2ta, coe2rv, solar_illumination_angle
 
-__all__ = ["SatState", "OGESettings", "OGEInterface"]
+__all__ = ["SatState", "OGESettings", "OGEInterface", "ma2ta", "coe2rv", "solar_illumination_angle"]
 
 try:
     # TODO

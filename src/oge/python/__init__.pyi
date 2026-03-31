@@ -8,6 +8,23 @@ import numpy as np
 import numpy.typing as npt
 
 
+# ==========================================
+# C++ 绑定的全局函数
+# ==========================================
+def ma2ta(ma: float, ecc: float, tol: float = 1e-10, max_iter: int = 100) -> float:
+    """Convert mean anomaly to true anomaly (rad)"""
+    ...
+
+def coe2rv(sma: float, ecc: float, incl: float, raan: float, argp: float, ta: float) -> Tuple[np.ndarray, np.ndarray]:
+    """Convert orbital elements (km, rad) to position (km) and velocity (km/s) vectors"""
+    ...
+
+def solar_illumination_angle(pos_sun_j2000: np.ndarray, pos_evader_j2000: np.ndarray, pos_chaser_j2000: np.ndarray) -> float:
+    """Calculate solar illumination angle between Sun->Evader and Evader->Chaser vectors"""
+    ...
+# ==========================================
+
+
 class SatState:
     r_j2000: np.ndarray  # Eigen::Vector3d, shape (3,)
     v_j2000: np.ndarray  # Eigen::Vector3d, shape (3,)

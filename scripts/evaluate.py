@@ -81,6 +81,7 @@ def run_episode_recon(env, policy, state_preprocessor, device, fixed_states=None
         obs, info = env._env.reset(options={"states": fixed_states})
         env._last_obs = np.asarray(obs, dtype=np.float32)
         env._recon_time_accumulated = 0.0
+        env._last_in_recon_zone = False
         red_obs = env._last_obs[1]
         env._last_dist = np.linalg.norm(red_obs[6:9])
         refined_obs = env._get_refined_obs(env._last_obs)
@@ -92,8 +93,10 @@ def run_episode_recon(env, policy, state_preprocessor, device, fixed_states=None
     done = False
     total_reward = 0.0
     step_count = 0
-    is_success = False
-    trajectory = {"distances": [], "solar_angles_deg": [], "rewards": []}
+    is_success_120s = False  # 120s侦照成功
+    entry_count = 0  # 进入侦照区次数
+    time_in_zone = 0.0  # 累计在区域内时间
+    trajectory = {"distances": [], "solar_angles_deg": [], "rewards": [], "in_zone": []}
 
     while not done:
         with torch.no_grad():
@@ -110,19 +113,31 @@ def run_episode_recon(env, policy, state_preprocessor, device, fixed_states=None
 
         done = terminated.item() or truncated.item()
 
-        if distance <= 20.0 and solar_angle <= np.deg2rad(60.0):
-            is_success = True
+        # 检查是否在侦照区
+        in_zone = (distance <= 20.0 and solar_angle <= np.deg2rad(60.0))
+        if in_zone:
+            time_in_zone += env._timestep
+            # 检查是否是新进入
+            if step_count == 0 or not trajectory["in_zone"][-1]:
+                entry_count += 1
+
+        # 检查是否达到120s侦照成功
+        if time_in_zone >= 120.0:
+            is_success_120s = True
 
         trajectory["distances"].append(distance)
         trajectory["solar_angles_deg"].append(solar_angle_deg)
         trajectory["rewards"].append(reward.item())
+        trajectory["in_zone"].append(in_zone)
 
         total_reward += reward.item()
         step_count += 1
 
     return {
         "total_reward": total_reward,
-        "success": is_success,
+        "success_120s": is_success_120s,
+        "entry_count": entry_count,
+        "time_in_zone": time_in_zone,
         "final_distance": distance,
         "final_solar_angle_deg": solar_angle_deg,
         "steps": step_count,
@@ -227,15 +242,18 @@ def evaluate(checkpoint_path, num_episodes=10, task="recon"):
     for ep in range(num_episodes):
         r = run_episode(env, policy, state_preprocessor, device, fixed_states=None)
         results.append(r)
-        status = "SUCCESS" if r["success"] else "FAILED"
 
         if task == "recon":
+            status = "SUCCESS_120s" if r["success_120s"] else "FAILED"
             print(f"  Ep {ep+1:3d} [{status}]: "
                   f"Reward={r['total_reward']:8.2f}  "
                   f"Dist={r['final_distance']:7.2f}km  "
                   f"SolarAngle={r['final_solar_angle_deg']:6.1f}°  "
+                  f"Entries={r['entry_count']}  "
+                  f"TimeInZone={r['time_in_zone']:.1f}s  "
                   f"Steps={r['steps']}")
         else:
+            status = "SUCCESS" if r["success"] else "FAILED"
             print(f"  Ep {ep+1:3d} [{status}]: "
                   f"Reward={r['total_reward']:8.2f}  "
                   f"Dist={r['final_distance']:7.2f}km  "
@@ -247,9 +265,13 @@ def evaluate(checkpoint_path, num_episodes=10, task="recon"):
     print(f"  Avg Final Dist  : {np.mean([r['final_distance'] for r in results]):.2f} km")
     if task == "recon":
         print(f"  Avg Solar Angle : {np.mean([r['final_solar_angle_deg'] for r in results]):.1f} °")
+        print(f"  Avg Entry Count : {np.mean([r['entry_count'] for r in results]):.1f}")
+        print(f"  Avg Time in Zone: {np.mean([r['time_in_zone'] for r in results]):.1f} s")
+        print(f"  Success Rate (120s): {sum(r['success_120s'] for r in results) / num_episodes * 100:.1f}%")
+        print(f"  Entry Rate (≥1)  : {sum(r['entry_count'] >= 1 for r in results) / num_episodes * 100:.1f}%")
     else:
         print(f"  Avg Final Vel   : {np.mean([r['final_vel_ms'] for r in results]):.2f} m/s")
-    print(f"  Success Rate    : {sum(r['success'] for r in results) / num_episodes * 100:.1f}%")
+        print(f"  Success Rate    : {sum(r['success'] for r in results) / num_episodes * 100:.1f}%")
 
     # --- 指定初始状态验证 ---
     print("\n=== Fixed Init Episode ===")
@@ -261,23 +283,28 @@ def evaluate(checkpoint_path, num_episodes=10, task="recon"):
         dv_init_blue=env_cfg.dv_init_blue,
     )
     r = run_episode(env, policy, state_preprocessor, device, fixed_states=fixed_states)
-    status = "SUCCESS" if r["success"] else "FAILED"
 
     if task == "recon":
+        status = "SUCCESS_120s" if r["success_120s"] else "FAILED"
         print(f"  Result [{status}]: "
               f"Reward={r['total_reward']:.2f}  "
               f"FinalDist={r['final_distance']:.2f}km  "
               f"FinalSolarAngle={r['final_solar_angle_deg']:.1f}°  "
+              f"Entries={r['entry_count']}  "
+              f"TimeInZone={r['time_in_zone']:.1f}s  "
               f"Steps={r['steps']}")
 
         traj = r["trajectory"]
         print("\n  Trajectory (every 20 steps):")
-        print(f"  {'Step':>6}  {'Dist(km)':>10}  {'SolarAngle(°)':>14}  {'Reward':>8}")
+        print(f"  {'Step':>6}  {'Dist(km)':>10}  {'SolarAngle(°)':>14}  {'InZone':>7}  {'Reward':>8}")
         for i in range(0, len(traj["distances"]), 20):
+            in_zone_str = "YES" if traj["in_zone"][i] else "NO"
             print(f"  {i:6d}  {traj['distances'][i]:10.2f}  "
                   f"{traj['solar_angles_deg'][i]:14.1f}  "
+                  f"{in_zone_str:>7}  "
                   f"{traj['rewards'][i]:8.3f}")
     else:
+        status = "SUCCESS" if r["success"] else "FAILED"
         print(f"  Result [{status}]: "
               f"Reward={r['total_reward']:.2f}  "
               f"FinalDist={r['final_distance']:.2f}km  "

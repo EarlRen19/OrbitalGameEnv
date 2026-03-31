@@ -46,6 +46,16 @@ namespace oge
     void fDot_and_gDot(double x, double r, double ro, double a, double& fdot, double& gdot);
 
     /**
+     * Convert mean anomaly to true anomaly using Newton's method to solve Kepler's equation.
+     * @param[in] ma mean anomaly (rad)
+     * @param[in] ecc eccentricity
+     * @param[in] tol convergence tolerance (default 1e-10)
+     * @param[in] max_iter maximum iterations (default 100)
+     * @return true anomaly (rad), range [0, 2π)
+     */
+    double ma2ta(double ma, double ecc, double tol = 1e-10, int max_iter = 100);
+
+    /**
      * This function computes the state vector (r,v) from the classical orbital elements (coe).
      * @param[in] coe orbital elements [a, e, incl, RA, w, TA]
      * - a semimajor axis (km)

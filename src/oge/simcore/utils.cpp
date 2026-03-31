@@ -68,6 +68,22 @@ namespace oge
         gdot = 1 - pow(x, 2) / r * stumpC(z);
     }
 
+    double ma2ta(double ma, double ecc, double tol, int max_iter)
+    {
+        // Solve Kepler's equation: E - e*sin(E) = M using Newton's method
+        double E = (ecc < 0.8) ? ma : M_PI;
+        for (int i = 0; i < max_iter; ++i)
+        {
+            double dE = (ma - E + ecc * sin(E)) / (1.0 - ecc * cos(E));
+            E += dE;
+            if (fabs(dE) < tol)
+                break;
+        }
+        // Convert eccentric anomaly to true anomaly
+        double ta = 2.0 * atan2(sqrt(1.0 + ecc) * sin(E / 2.0), sqrt(1.0 - ecc) * cos(E / 2.0));
+        return fmod(ta + 2.0 * M_PI, 2.0 * M_PI);
+    }
+
     void coe2rv(const Eigen::Matrix<double, 6, 1>& coe, Eigen::Vector3d& R, Eigen::Vector3d& V)
     {
         const double a = coe(0);

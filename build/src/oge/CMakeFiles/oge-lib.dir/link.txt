@@ -1,2 +1,0 @@
-"/usr/bin/gcc-ar-13" cr liboge.a "CMakeFiles/oge-lib.dir/oge_interface.cpp.o" CMakeFiles/oge.dir/simcore/propagator.cpp.o CMakeFiles/oge.dir/simcore/utils.cpp.o CMakeFiles/oge.dir/environment/orbital_game_environment.cpp.o CMakeFiles/oge.dir/common/constants.cpp.o CMakeFiles/oge.dir/environment/oge_settings.cpp.o CMakeFiles/oge.dir/common/log.cpp.o CMakeFiles/oge.dir/environment/oge_state.cpp.o
-"/usr/bin/gcc-ranlib-13" liboge.a
