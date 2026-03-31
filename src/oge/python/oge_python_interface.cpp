@@ -36,7 +36,7 @@ namespace oge
         std::vector<Eigen::VectorXd> observations;
         OGEInterface::getObservations(observations);
 
-        size_t num_agents = settings->getInt("num_evaders") + settings->getInt("num_pursuers");
+        size_t num_agents = 2; // 1 blue_sat + 1 red_sat
         size_t obs_size = environment->getObsSize(0);
         size_t total_obs_size = num_agents * obs_size;
 

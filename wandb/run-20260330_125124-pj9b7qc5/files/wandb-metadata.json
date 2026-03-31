@@ -1,0 +1,44 @@
+{
+  "os": "Linux-6.17.0-14-generic-x86_64-with-glibc2.39",
+  "python": "CPython 3.13.12",
+  "startedAt": "2026-03-30T04:51:24.817930Z",
+  "args": [
+    "--name",
+    "March_30th_recon_v1"
+  ],
+  "program": "/home/star/Downloads/oge_2.0/OGE/scripts/train.py",
+  "codePath": "scripts/train.py",
+  "codePathLocal": "scripts/train.py",
+  "git": {
+    "remote": "https://github.com/BaoyiCui/OGE.git",
+    "commit": "3445a7bbd275e395779cc5f30103d099772105d0"
+  },
+  "email": "earljen19@gmail.com",
+  "root": "/home/star/Downloads/oge_2.0/OGE",
+  "host": "star",
+  "executable": "/home/star/miniconda3/envs/oge/bin/python",
+  "cpu_count": 10,
+  "cpu_count_logical": 16,
+  "gpu": "NVIDIA GeForce RTX 4060",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "982240026624",
+      "used": "270031302656"
+    }
+  },
+  "memory": {
+    "total": "33361567744"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 4060",
+      "memoryTotal": "8585740288",
+      "cudaCores": 3072,
+      "architecture": "Ada",
+      "uuid": "GPU-2d99f54c-51e8-7d19-925a-98d4f1754a1e"
+    }
+  ],
+  "cudaVersion": "13.0",
+  "writerId": "afqe87zc4qqaxyx6heknwaxg0w0mi1lj"
+}

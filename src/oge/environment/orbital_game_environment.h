@@ -39,7 +39,9 @@ namespace oge
 
         double getCurrentTime() const;
 
-        /** Returns true if any evader has been captured (is_alive == false). */
+        double getSolarIlluminationAngle() const;
+
+        /** Returns true if blue_sat has been captured (is_alive == false). */
         bool isCaptured() const;
 
         /** Returns a map from agent_id to SatState for all satellites. */
@@ -58,10 +60,10 @@ namespace oge
         void checkAlive();
 
         double getFormationReward() const;
-        double getDistanceRewardNew(int p) const;
-        double getDistanceReward(int p) const;
-        double getCaptureReward(int p) const;
-        double getFuelReward(int p, const Eigen::Vector3d& action) const;
+        double getDistanceRewardNew(int red_idx) const;
+        double getDistanceReward(int red_idx) const;
+        double getCaptureReward(int red_idx) const;
+        double getFuelReward(int red_idx, const Eigen::Vector3d& action) const;
         double getTimeReward() const;
 
     private:
@@ -70,14 +72,12 @@ namespace oge
         /** Settings cache */
 
         const int random_seed;
-        const int num_pursuers;
-        const int num_evaders;
-        const int num_agents;
+        static constexpr int num_agents = 2; // 1 blue_sat + 1 red_sat
         // simulation settings
-        const double dv_init_p;
-        const double dv_init_e;
-        const double dv_max_per_step_p;
-        const double dv_max_per_step_e;
+        const double dv_init_red;
+        const double dv_init_blue;
+        const double dv_max_per_step_red;
+        const double dv_max_per_step_blue;
         const double capture_distance;
         const double timestep;
         const double terminal_time;
@@ -106,7 +106,8 @@ namespace oge
         /** Settings cache end */
 
         std::vector<std::string> agent_ids;
-        std::vector<SatState> agents_states; // the first num_evaders elements of agents_states are evaders' states
+        // agents_states[0] = blue_sat, agents_states[1] = red_sat
+        std::vector<SatState> agents_states;
 
         double current_time; // s
 

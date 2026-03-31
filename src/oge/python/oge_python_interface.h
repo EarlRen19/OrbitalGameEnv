@@ -18,6 +18,7 @@
 #include <nanobind/eigen/dense.h>
 
 #include "oge/oge_interface.h"
+#include "oge/simcore/utils.h"
 #include "version.h"
 
 namespace nb = nanobind;
@@ -43,6 +44,10 @@ namespace oge
 NB_MODULE(_oge_py, m)
 {
     m.attr("__version__") = OGE_VERSION;
+
+    m.def("solar_illumination_angle", &oge::solar_illumination_angle,
+          "pos_sun_j2000"_a, "pos_evader_j2000"_a, "pos_chaser_j2000"_a,
+          "Calculate solar illumination angle between Sun->Evader and Evader->Chaser vectors");
 
     nb::class_<oge::SatState>(m, "SatState")
         .def(nb::init<>())

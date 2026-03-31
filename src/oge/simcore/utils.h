@@ -7,6 +7,11 @@
 
 #include <cmath>
 #include <chrono>
+#include <iomanip>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+
 
 #include "oge/common/constants.h"
 #include "oge/simcore/propagator.h"
@@ -117,24 +122,283 @@ namespace oge
         Eigen::Vector3d& R_LVLH,
         Eigen::Vector3d& V_LVLH);
 
-    //年月日时分秒转化为儒略日
-    double JulianDay(std::chrono::sys_time<std::chrono::seconds> & UTC);
+    /**
+     * 将 UTC 时间转换为儒略日 (Julian Day)。
+     * 利用 Unix 纪元 (1970-01-01 00:00:00 UTC) 对应 JD 2440587.5 进行计算。
+     * @param[in] UTC  UTC 时间点（秒精度）
+     * @return 对应的儒略日数 (JD)
+     */
+    double JulianDay(const std::chrono::sys_time<std::chrono::seconds>& UTC);
 
-    //年月日时分秒转化为MJD儒略日
-    double JulianDay_Modified(std::chrono::sys_time<std::chrono::seconds>& UTC);
+    /**
+     * 将 UTC 时间转换为修正儒略日 (Modified Julian Day, MJD)。
+     * MJD = JD - 2400000.5
+     * @param[in] UTC  UTC 时间点（秒精度）
+     * @return 对应的修正儒略日数 (MJD)
+     */
+    double JulianDay_Modified(const std::chrono::sys_time<std::chrono::seconds>& UTC);
 
-    //UTC时间转换为TDT时间. 输入: UTC MJD格式的UTC.
-    double UTC_TDT(double MJD);
+    /**
+     * 将 UTC 时间转换为地球力学时 TT (Terrestrial Time)。
+     * TT = UTC + delta_T，其中 delta_T ≈ 69.184s（37 个闰秒 + 32.184s）。
+     * @param[in] MJD  MJD 格式的 UTC 时间
+     * @return MJD 格式的 TT 时间
+     */
+    double UTC_TT(double MJD);
 
-    //TDT时间转换为MJD格式的UTC时间. 输入: TDT MJD格式的TDT.
-    double TDT_UTC(double TDT);
+    /**
+     * 将地球力学时 TT 转换为 UTC 时间。
+     * UTC = TT - delta_T，其中 delta_T ≈ 69.184s。
+     * @param[in] TT  MJD 格式的 TT 时间
+     * @return MJD 格式的 UTC 时间
+     */
+    double TT_UTC(double TT);
 
-    //MJD时间转换为UTC时间. 输入: MJD时间.
+    /**
+     * 将修正儒略日 (MJD) 转换为 UTC 时间。
+     * @param[in]  MJD  修正儒略日数
+     * @param[out] UTC  对应的 UTC 时间点（秒精度）
+     */
     void MJD_UTC(double MJD, std::chrono::sys_time<std::chrono::seconds>& UTC);
 
-    // 计算太阳在 J2000 坐标系下的位置
+    /**
+     * 计算太阳在 J2000 坐标系下的位置向量。
+     * 使用 Meeus 低精度太阳位置算法，先计算太阳黄经和日地距离，
+     * 再通过黄赤交角转换到 J2000 坐标系。
+     * @param[in]  jd              儒略日 (Julian Day)
+     * @param[out] pos_sun_j2000   太阳在 J2000 坐标系下的位置向量 (km)
+     */
     void solar_position(double jd, Eigen::Vector3d& pos_sun_j2000);
+
+    /**
+     * 计算太阳在 J2000 坐标系下的位置向量（UTC 时间输入版本）。
+     * 内部将 UTC 转换为儒略日后调用 solar_position(jd, ...) 。
+     * @param[in]  UTC             UTC 时间点（秒精度）
+     * @param[out] pos_sun_j2000   太阳在 J2000 坐标系下的位置向量 (km)
+     */
     void solar_position(const std::chrono::sys_time<std::chrono::seconds>& UTC, Eigen::Vector3d& pos_sun_j2000);
+
+    /**
+     * 计算太阳光照角：目标→太阳 与 目标→追击者 向量之间的夹角（弧度）。
+     * 角度为0表示追击者在目标的顺光方向，角度越小顺光条件越好。
+     * @param[in] pos_sun_j2000     太阳在 J2000 坐标系下的位置 (km)
+     * @param[in] pos_evader_j2000  目标卫星在 J2000 坐标系下的位置 (km)
+     * @param[in] pos_chaser_j2000  追击者卫星在 J2000 坐标系下的位置 (km)
+     * @return 光照角 (rad)，范围 [0, π]
+     */
+    double solar_illumination_angle(
+        const Eigen::Vector3d& pos_sun_j2000,
+        const Eigen::Vector3d& pos_evader_j2000,
+        const Eigen::Vector3d& pos_chaser_j2000);
+
+    std::chrono::sys_time<std::chrono::milliseconds> UTC_SysTime(
+        int y,
+        unsigned int m,
+        unsigned int d,
+        int hh,
+        int mm,
+        double ss
+    );
+
+
+    class Datetime
+    {
+    public:
+        using duration = std::chrono::milliseconds;
+        using time_point = std::chrono::sys_time<duration>;
+
+        Datetime() = default;
+
+        Datetime(
+            const int y,
+            const unsigned m,
+            const unsigned d,
+            const int hh = 0,
+            const int mm = 0,
+            const int ss = 0,
+            const int ms = 0
+        )
+            : tp_(make_time_point(y, m, d, hh, mm, ss, ms))
+        {
+        }
+
+        explicit Datetime(const time_point& tp)
+            : tp_(tp)
+        {
+        }
+
+        static Datetime from_sys_time(const time_point& tp)
+        {
+            return Datetime(tp);
+        }
+
+        static Datetime from_unix_milliseconds(std::int64_t unix_ms)
+        {
+            return Datetime(time_point{duration{unix_ms}});
+        }
+
+        time_point to_sys_time() const
+        {
+            return tp_;
+        }
+
+        std::int64_t unix_milliseconds() const
+        {
+            return tp_.time_since_epoch().count();
+        }
+
+        int year() const
+        {
+            return int(ymd().year());
+        }
+
+        unsigned month() const
+        {
+            return unsigned(ymd().month());
+        }
+
+        unsigned day() const
+        {
+            return unsigned(ymd().day());
+        }
+
+        int hour() const
+        {
+            return int(hms().hours().count());
+        }
+
+        int minute() const
+        {
+            return int(hms().minutes().count());
+        }
+
+        int second() const
+        {
+            return int(hms().seconds().count());
+        }
+
+        int millisecond() const
+        {
+            return int(hms().subseconds().count());
+        }
+
+        double second_decimal() const
+        {
+            return static_cast<double>(second()) +
+                static_cast<double>(millisecond()) / 1000.0;
+        }
+
+        std::string to_string() const
+        {
+            std::ostringstream oss;
+            oss << std::setfill('0')
+                << std::setw(4) << year() << "-"
+                << std::setw(2) << month() << "-"
+                << std::setw(2) << day() << " "
+                << std::setw(2) << hour() << ":"
+                << std::setw(2) << minute() << ":"
+                << std::setw(2) << second() << "."
+                << std::setw(3) << millisecond()
+                << " UTC";
+            return oss.str();
+        }
+
+        Datetime add_milliseconds(long long ms) const
+        {
+            return Datetime(tp_ + std::chrono::milliseconds{ms});
+        }
+
+        Datetime add_seconds(long long s) const
+        {
+            return Datetime(tp_ + std::chrono::seconds{s});
+        }
+
+        Datetime add_minutes(long long m) const
+        {
+            return Datetime(tp_ + std::chrono::minutes{m});
+        }
+
+        Datetime add_hours(long long h) const
+        {
+            return Datetime(tp_ + std::chrono::hours{h});
+        }
+
+        Datetime add_days(long long d) const
+        {
+            return Datetime(tp_ + std::chrono::days{d});
+        }
+
+        friend bool operator==(const Datetime&, const Datetime&) = default;
+
+        friend bool operator<(const Datetime& a, const Datetime& b)
+        {
+            return a.tp_ < b.tp_;
+        }
+
+        friend bool operator<=(const Datetime& a, const Datetime& b)
+        {
+            return a.tp_ <= b.tp_;
+        }
+
+        friend bool operator>(const Datetime& a, const Datetime& b)
+        {
+            return a.tp_ > b.tp_;
+        }
+
+        friend bool operator>=(const Datetime& a, const Datetime& b)
+        {
+            return a.tp_ >= b.tp_;
+        }
+
+    private:
+        time_point tp_{};
+
+        static time_point make_time_point(int y, unsigned m, unsigned d,
+                                          int hh, int mm, int ss, int ms)
+        {
+            // using namespace std::chrono::;
+
+            std::chrono::year_month_day ymd{
+                std::chrono::year{y},
+                std::chrono::month{m},
+                std::chrono::day{d}
+            };
+            if (!ymd.ok())
+            {
+                throw std::runtime_error("invalid date");
+            }
+            if (hh < 0 || hh >= 24 ||
+                mm < 0 || mm >= 60 ||
+                ss < 0 || ss >= 60 ||
+                ms < 0 || ms >= 1000)
+            {
+                throw std::runtime_error("invalid time");
+            }
+
+            return std::chrono::time_point_cast<duration>(
+                std::chrono::sys_days{ymd}
+                + std::chrono::hours{hh}
+                + std::chrono::minutes{mm}
+                + std::chrono::seconds{ss}
+                + std::chrono::milliseconds{ms}
+            );
+        }
+
+        std::chrono::sys_days days_part() const
+        {
+            return std::chrono::floor<std::chrono::days>(tp_);
+        }
+
+        std::chrono::year_month_day ymd() const
+        {
+            return std::chrono::year_month_day{days_part()};
+        }
+
+        std::chrono::hh_mm_ss<duration> hms() const
+        {
+            return std::chrono::hh_mm_ss<duration>{tp_ - days_part()};
+        }
+    };
 }
 
 #endif //ORBITALGAMEENV_UTILS_H

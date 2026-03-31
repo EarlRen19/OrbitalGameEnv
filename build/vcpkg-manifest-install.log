@@ -1,0 +1,47 @@
+Detecting compiler hash for triplet x64-linux...
+Compiler found: /usr/bin/c++
+The following packages will be built and installed:
+    eigen3:x64-linux@5.0.1
+    gtest:x64-linux@1.17.0#2
+  * vcpkg-cmake:x64-linux@2024-04-23
+  * vcpkg-cmake-config:x64-linux@2024-05-23
+Additional packages (*) will be modified to complete this operation.
+Restored 4 package(s) from /home/star/.cache/vcpkg/archives in 67.4 ms. Use --debug to see more details.
+Installing 1/4 vcpkg-cmake-config:x64-linux@2024-05-23...
+vcpkg-cmake-config:x64-linux@2024-05-23 package ABI: 938b5e1dc7ceacf08654bef246055524d658786b56f39c96f3b23d2de8d063d3
+Elapsed time to handle vcpkg-cmake-config:x64-linux: 762 us
+Installing 2/4 vcpkg-cmake:x64-linux@2024-04-23...
+vcpkg-cmake:x64-linux@2024-04-23 package ABI: f7cbaf4a1eecbbb1579be1e8dbbd016626910498335b8370236a4219615937b6
+Elapsed time to handle vcpkg-cmake:x64-linux: 609 us
+Installing 3/4 eigen3:x64-linux@5.0.1...
+eigen3:x64-linux@5.0.1 package ABI: e61ef05b636771fa7cba8789ad39e3afc973dac6a26d379bacfd534672311415
+Elapsed time to handle eigen3:x64-linux: 6.22 ms
+Installing 4/4 gtest:x64-linux@1.17.0#2...
+gtest:x64-linux@1.17.0#2 package ABI: 4cc21124af27493ac1787e1dc10c3210a797392776b8c63de971fa570703f0b9
+Elapsed time to handle gtest:x64-linux: 1.61 ms
+Installed contents are licensed to you by owners. Microsoft is not responsible for, nor does it grant any licenses to, third-party packages.
+Packages installed in this vcpkg installation declare the following licenses:
+BSD-3-Clause
+MIT
+MPL-2.0
+eigen3 provides CMake targets:
+
+  # this is heuristically generated, and may not be correct
+  find_package(Eigen3 CONFIG REQUIRED)
+  target_link_libraries(main PRIVATE Eigen3::Eigen)
+
+eigen3 provides pkg-config modules:
+
+  # A C++ template library for linear algebra: vectors, matrices, and related algorithms
+  eigen3
+
+The package gtest is compatible with built-in CMake targets:
+
+    enable_testing()
+    
+    find_package(GTest CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE GTest::gtest GTest::gtest_main GTest::gmock GTest::gmock_main)
+    
+    add_test(AllTestsInMain main)
+
+All requested installations completed successfully in: 9.51 ms

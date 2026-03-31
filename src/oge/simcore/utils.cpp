@@ -239,37 +239,109 @@ namespace oge
         V_J2000 = DCM * V_LVLH + VRefJ2000 + wJ2000.cross(RRel);
     }
 
-    //年月日时分秒转化为儒略日
-    double JulianDay(std::chrono::sys_time<std::chrono::seconds>& UTC)
+    double JulianDay(const std::chrono::sys_time<std::chrono::seconds>& UTC)
     {
+        // Unix epoch (1970-01-01 00:00:00 UTC) corresponds to JD 2440587.5
+        auto epoch_seconds = UTC.time_since_epoch().count();
+        return static_cast<double>(epoch_seconds) / 86400.0 + 2440587.5;
     }
 
-    //年月日时分秒转化为MJD儒略日
-    double JulianDay_Modified(std::chrono::sys_time<std::chrono::seconds>& UTC)
+    double JulianDay_Modified(const std::chrono::sys_time<std::chrono::seconds>& UTC)
     {
+        return JulianDay(UTC) - 2400000.5;
     }
 
-    //UTC时间转换为TDT时间. 输入: UTC MJD格式的UTC.
-    double UTC_TDT(double MJD)
+    double UTC_TT(double MJD)
     {
+        // TT (Terrestrial Time) = UTC + delta_T
+        // delta_T = leap_seconds + 32.184s
+        // As of 2017+, leap_seconds = 37, so delta_T ≈ 69.184s
+        constexpr double delta_T_days = 69.184 / 86400.0;
+        return MJD + delta_T_days;
     }
 
-    //TDT时间转换为MJD格式的UTC时间. 输入: TDT MJD格式的TDT.
-    double TDT_UTC(double TDT)
+    double TT_UTC(double TT)
     {
+        constexpr double delta_T_days = 69.184 / 86400.0;
+        return TT - delta_T_days;
     }
 
-    //MJD时间转换为UTC时间. 输入: MJD时间.
     void MJD_UTC(double MJD, std::chrono::sys_time<std::chrono::seconds>& UTC)
     {
+        double JD = MJD + 2400000.5;
+        double seconds_since_epoch = (JD - 2440587.5) * 86400.0;
+        UTC = std::chrono::sys_time<std::chrono::seconds>(
+            std::chrono::seconds(static_cast<long long>(std::round(seconds_since_epoch))));
     }
 
-    // 计算太阳在 J2000 坐标系下的位置
     void solar_position(double jd, Eigen::Vector3d& pos_sun_j2000)
     {
+        // Low-precision solar position algorithm
+        // Reference: Meeus, "Astronomical Algorithms"; Vallado, "Fundamentals of Astrodynamics"
+
+        // Julian centuries from J2000.0 epoch (2000-01-01 12:00 TT)
+        double T = (jd - 2451545.0) / 36525.0;
+
+        // Mean longitude of the Sun (degrees)
+        double L0 = 280.46646 + 36000.76983 * T + 0.0003032 * T * T;
+        L0 = fmod(L0, 360.0);
+        if (L0 < 0) L0 += 360.0;
+
+        // Mean anomaly of the Sun (degrees)
+        double M = 357.52911 + 35999.05029 * T - 0.0001537 * T * T;
+        M = fmod(M, 360.0);
+        if (M < 0) M += 360.0;
+        double M_rad = M * M_PI / 180.0;
+
+        // Eccentricity of Earth's orbit
+        double e = 0.016708634 - 0.000042037 * T - 0.0000001267 * T * T;
+
+        // Equation of center (degrees)
+        double C = (1.914602 - 0.004817 * T - 0.000014 * T * T) * sin(M_rad)
+            + (0.019993 - 0.000101 * T) * sin(2.0 * M_rad)
+            + 0.000289 * sin(3.0 * M_rad);
+
+        // Sun's true longitude (degrees)
+        double sun_lon = L0 + C;
+
+        // Sun's true anomaly (radians)
+        double v_rad = (M + C) * M_PI / 180.0;
+
+        // Sun-Earth distance (km)
+        double R_km = AU * 1.000001018 * (1.0 - e * e) / (1.0 + e * cos(v_rad));
+
+        // Obliquity of the ecliptic (degrees)
+        double epsilon = 23.439291 - 0.0130042 * T - 1.64e-7 * T * T + 5.04e-7 * T * T * T;
+        double epsilon_rad = epsilon * M_PI / 180.0;
+
+        // Sun's ecliptic longitude (radians)
+        double lambda_rad = sun_lon * M_PI / 180.0;
+
+        // Convert from ecliptic to J2000 equatorial coordinates
+        pos_sun_j2000(0) = R_km * cos(lambda_rad);
+        pos_sun_j2000(1) = R_km * cos(epsilon_rad) * sin(lambda_rad);
+        pos_sun_j2000(2) = R_km * sin(epsilon_rad) * sin(lambda_rad);
     }
 
     void solar_position(const std::chrono::sys_time<std::chrono::seconds>& UTC, Eigen::Vector3d& pos_sun_j2000)
     {
+        // Convert UTC to Julian Day, then delegate
+        auto epoch_seconds = UTC.time_since_epoch().count();
+        double jd = static_cast<double>(epoch_seconds) / 86400.0 + 2440587.5;
+        solar_position(jd, pos_sun_j2000);
     }
+
+    double solar_illumination_angle(
+        const Eigen::Vector3d& pos_sun_j2000,
+        const Eigen::Vector3d& pos_evader_j2000,
+        const Eigen::Vector3d& pos_chaser_j2000)
+    {
+        // 目标→太阳 方向
+        const Eigen::Vector3d to_sun = (pos_sun_j2000 - pos_evader_j2000).normalized();
+        // 目标→追击者 方向
+        const Eigen::Vector3d to_chaser = (pos_chaser_j2000 - pos_evader_j2000).normalized();
+        // 夹角，clamp防止数值误差导致acos越界
+        return std::acos(std::clamp(to_sun.dot(to_chaser), -1.0, 1.0));
+    }
+
 }

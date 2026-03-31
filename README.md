@@ -8,7 +8,7 @@
 
 ```
 sudo apt update
-sudo apt install gcc-13 g++-13
+sudo apt install build-essential gcc-13 g++-13
 ```
 
 设置为默认版本
@@ -30,6 +30,22 @@ sudo update-alternatives --config g++
 ```
 gcc --version                                                                                                                                                                                                        
 g++ --version
+```
+
+输出类似如下内容：
+
+```text
+(oge) ➜  OGE git:(main) ✗ gcc --version
+gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Copyright (C) 2023 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+(oge) ➜  OGE git:(main) ✗ g++ --version
+g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Copyright (C) 2023 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ```
 
 ### 1.2 安装 vcpkg
@@ -77,3 +93,7 @@ pip install .
 ```
 
 ## 3. 运行 SKRL 训练示例
+
+```bash
+python scripts/train.py
+```

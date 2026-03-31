@@ -1,0 +1,19 @@
+Starting PPO training on OGE (recon task)
+ 10%|█████████▎                                                                               | 831907/8000000 [13:42<1:58:10, 1010.96it/s]
+Traceback (most recent call last):
+  File "/home/star/Downloads/oge_2.0/OGE/scripts/train.py", line 92, in <module>
+    main()
+    ~~~~^^
+  File "/home/star/Downloads/oge_2.0/OGE/scripts/train.py", line 88, in main
+    trainer.train()
+    ~~~~~~~~~~~~~^^
+  File "/home/star/miniconda3/envs/oge/lib/python3.13/site-packages/skrl/trainers/torch/sequential.py", line 86, in train
+    self.single_agent_train()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/star/miniconda3/envs/oge/lib/python3.13/site-packages/skrl/trainers/torch/base.py", line 196, in single_agent_train
+    next_states, rewards, terminated, truncated, infos = self.env.step(actions)
+                                                         ~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/star/Downloads/oge_2.0/OGE/modules/env_wrapper.py", line 83, in step
+    rew_t = torch.tensor([[reward_red]], dtype=torch.float32).to(self.device)
+            ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt

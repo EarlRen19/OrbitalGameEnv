@@ -21,8 +21,6 @@ class OGEEnvStepMetadata(TypedDict):
 class OGEEnvCfg:
     # int settings
     random_seed: int = 42
-    num_pursuers: int = 4
-    num_evaders: int = 1
 
     # float settings - orbital elements
     sma_base: float = 42164.0  # semi-major axis, km
@@ -33,10 +31,10 @@ class OGEEnvCfg:
     TA_base: float = 0.0  # true anomaly, rad
 
     # float settings - agent params
-    dv_init_p: float = 0.2  # km/s
-    dv_init_e: float = 0.2  # km/s
-    dv_max_per_step_p: float = 0.01  # km/s
-    dv_max_per_step_e: float = 0.01  # km/s
+    dv_init_red: float = 0.2  # km/s
+    dv_init_blue: float = 0.2  # km/s
+    dv_max_per_step_red: float = 0.01  # km/s
+    dv_max_per_step_blue: float = 0.01  # km/s
     capture_distance: float = 30.0  # km
     timestep: float = 60.0  # s
     terminal_time: float = 3600.0  # s

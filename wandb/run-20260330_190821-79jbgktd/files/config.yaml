@@ -1,0 +1,145 @@
+_wandb:
+    value:
+        cli_version: 0.25.1
+        e:
+            7ztybku9k7datyk6wnlyybc7h593h861:
+                args:
+                    - --name
+                    - March_30th_recon_v1
+                codePath: scripts/train.py
+                codePathLocal: scripts/train.py
+                cpu_count: 10
+                cpu_count_logical: 16
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "982240026624"
+                        used: "270558203904"
+                email: earljen19@gmail.com
+                executable: /home/star/miniconda3/envs/oge/bin/python
+                git:
+                    commit: 3445a7bbd275e395779cc5f30103d099772105d0
+                    remote: https://github.com/BaoyiCui/OGE.git
+                gpu: NVIDIA GeForce RTX 4060
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 3072
+                      memoryTotal: "8585740288"
+                      name: NVIDIA GeForce RTX 4060
+                      uuid: GPU-2d99f54c-51e8-7d19-925a-98d4f1754a1e
+                host: star
+                memory:
+                    total: "33361567744"
+                os: Linux-6.17.0-14-generic-x86_64-with-glibc2.39
+                program: /home/star/Downloads/oge_2.0/OGE/scripts/train.py
+                python: CPython 3.13.12
+                root: /home/star/Downloads/oge_2.0/OGE
+                startedAt: "2026-03-30T11:08:21.187380Z"
+                writerId: 7ztybku9k7datyk6wnlyybc7h593h861
+        m: []
+        python_version: 3.13.12
+        t:
+            "1":
+                - 1
+            "2":
+                - 1
+            "3":
+                - 13
+                - 15
+                - 16
+                - 35
+                - 41
+            "4": 3.13.12
+            "5": 0.25.1
+            "12": 0.25.1
+            "13": linux-x86_64
+clip_predicted_values:
+    value: false
+close_environment_at_exit:
+    value: true
+disable_progressbar:
+    value: false
+discount_factor:
+    value: 0.99
+entropy_loss_scale:
+    value: 0.01
+environment_info:
+    value: episode
+experiment:
+    value:
+        checkpoint_interval: 50000
+        directory: runs/March_30th_recon_v1
+        experiment_name: March_30th_recon_v1
+        wandb: true
+        wandb_kwargs:
+            name: ppo-recon-task
+            project: OGE-Recon
+            tags:
+                - ppo
+                - reconnaissance
+        write_interval: 1000
+grad_norm_clip:
+    value: 0.5
+headless:
+    value: true
+kl_threshold:
+    value: 0
+lambda:
+    value: 0.95
+learning_epochs:
+    value: 8
+learning_rate:
+    value: 0.0003
+learning_rate_scheduler:
+    value: null
+learning_starts:
+    value: 0
+mini_batches:
+    value: 4
+mixed_precision:
+    value: false
+policy:
+    value:
+        "0": Linear(in_features=13, out_features=256, bias=True)
+        "1": ELU(alpha=1.0)
+        "2": Linear(in_features=256, out_features=256, bias=True)
+        "3": ELU(alpha=1.0)
+        "4": Linear(in_features=256, out_features=3, bias=True)
+random_timesteps:
+    value: 0
+ratio_clip:
+    value: 0.2
+rewards_shaper:
+    value: null
+rollouts:
+    value: 2048
+state_preprocessor:
+    value: skrl.resources.preprocessors.torch.running_standard_scaler.RunningStandardScaler
+state_preprocessor_kwargs:
+    value:
+        device: cuda
+        size: 13
+stochastic_evaluation:
+    value: false
+time_limit_bootstrap:
+    value: false
+timesteps:
+    value: 8000000
+value:
+    value:
+        "0": Linear(in_features=13, out_features=256, bias=True)
+        "1": ELU(alpha=1.0)
+        "2": Linear(in_features=256, out_features=256, bias=True)
+        "3": ELU(alpha=1.0)
+        "4": Linear(in_features=256, out_features=1, bias=True)
+value_clip:
+    value: 0.2
+value_loss_scale:
+    value: 0.5
+value_preprocessor:
+    value: skrl.resources.preprocessors.torch.running_standard_scaler.RunningStandardScaler
+value_preprocessor_kwargs:
+    value:
+        device: cuda
+        size: 1
