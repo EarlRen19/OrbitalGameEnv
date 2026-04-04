@@ -1,0 +1,53 @@
+==== 编译 ====
+cd /home/star/Downloads/oge_2.0/OGE && rm -rf build && mkdir build && cd build && cmake .. && make -j$(nproc) && cd .. && pip install .
+
+==== 1v1 训练 ====
+# 侦察任务
+python scripts/train.py --task recon --name March_31th_recon_v1
+
+# 最好结果路径
+# runs/March_31th_recon_v3_210_215_newreward_20h/March_31th_recon_v3_210_215_newreward_20h/checkpoints/best_agent.pt
+
+==== 1v1 微调 ====
+python scripts/fine_tune.py \
+    --checkpoint runs/March_31th_recon_v3_210_215_newreward_20h/March_31th_recon_v3_210_215_newreward_20h/checkpoints/best_agent.pt \
+    --timesteps 1000000 --lr 5e-5 --perturb 0.02 --name finetune_fixed_v1
+
+==== 1v1 评估 ====
+conda run -n oge python3 scripts/evaluate.py \
+    --checkpoint runs/March_31th_recon_v3_210_215_newreward_20h/March_31th_recon_v3_210_215_newreward_20h/checkpoints/best_agent.pt \
+    --task recon --episodes 100
+
+==== 1v1 可视化 ====
+conda run -n oge python3 scripts/visualize_fixed_init.py \
+    --checkpoint runs/finetune_fixed_v1/finetune_fixed_v1/checkpoints/best_agent.pt \
+    --output-dir visualizations
+
+==== 多智能体评估 ====
+# 2v2
+python scripts/evaluate_multi_agent.py \
+    --checkpoint runs/ma_2v2/ma_2v2/checkpoints/best_agent.pt \
+    --evaders 2 --pursuers 2 --episodes 20
+
+# 4v4
+python scripts/evaluate_multi_agent.py \
+    --checkpoint runs/ma_4v4/ma_4v4/checkpoints/best_agent.pt \
+    --evaders 4 --pursuers 4 --episodes 50
+
+# 4v1（无拦截）
+python scripts/evaluate_multi_agent.py \
+    --checkpoint runs/ma_4v1/ma_4v1/checkpoints/best_agent.pt \
+    --evaders 1 --pursuers 4 --no-threat --episodes 20
+
+# 4v1：4追击 vs 1HVT（无拦截，群体追捕）
+python scripts/train_multi_agent.py --evaders 1 --pursuers 4 --timesteps 5000000 --name ma_4v1
+
+# 2v2：2追击 vs 1HVT+1拦截
+python scripts/train_multi_agent.py --evaders 2 --pursuers 2 --threat --timesteps 8000000 --name ma_2v2
+
+# 4v4：完整追逃博弈
+python scripts/train_multi_agent.py --evaders 4 --pursuers 4 --threat --timesteps 10000000 --name ma_4v4
+
+# 续训
+python scripts/train_multi_agent.py --evaders 4 --pursuers 4 --threat \
+    --checkpoint runs/ma_4v4/ma_4v4/checkpoints/best_agent.pt --name ma_4v4_v2
