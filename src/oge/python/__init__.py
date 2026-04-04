@@ -33,14 +33,14 @@ from oge_py._oge_py import SatState, OGESettings, OGEInterface, ma2ta, coe2rv, s
 __all__ = ["SatState", "OGESettings", "OGEInterface", "ma2ta", "coe2rv", "solar_illumination_angle"]
 
 try:
-    # TODO
     from oge_py.env import OGEEnv, OGEEnvCfg, OGEEnvStepMetadata
+    __all__ += ["OGEEnv", "OGEEnvCfg", "OGEEnvStepMetadata"]
+except ImportError:
+    pass
+
+try:
     from oge_py.vector_env import OGEVectorEnv, OGEVectorEnvCfg
-
-    __all__ += ["OGEEnv", "OGEEnvCfg", "OGEEnvStepMetadata",
-                "OGEVectorEnv", "OGEVectorEnvCfg"]
-                
     from oge_py._oge_py import OGEVectorInterface
-
+    __all__ += ["OGEVectorEnv", "OGEVectorEnvCfg", "OGEVectorInterface"]
 except ImportError:
     pass

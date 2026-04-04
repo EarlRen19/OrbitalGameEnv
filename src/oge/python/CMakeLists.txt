@@ -22,6 +22,7 @@ install(TARGETS _oge_py_ma LIBRARY DESTINATION oge_py)
 install(FILES
         __init__.py
         env.py
+        vector_env.py
         registration.py
         py.typed
         DESTINATION oge_py)

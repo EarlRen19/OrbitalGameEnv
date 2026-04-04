@@ -78,6 +78,7 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
   file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/oge_py" TYPE FILE FILES
     "/home/star/Downloads/oge_2.0/OGE/src/oge/python/__init__.py"
     "/home/star/Downloads/oge_2.0/OGE/src/oge/python/env.py"
+    "/home/star/Downloads/oge_2.0/OGE/src/oge/python/vector_env.py"
     "/home/star/Downloads/oge_2.0/OGE/src/oge/python/registration.py"
     "/home/star/Downloads/oge_2.0/OGE/src/oge/python/py.typed"
     )
