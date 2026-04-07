@@ -62,6 +62,13 @@ MultiAgentOGE::MultiAgentOGE(
     int seed = settings_.getInt("random_seed", true);
     _rng.seed(static_cast<unsigned>(seed));
 
+    // JD epoch: use "jd_epoch" from settings if positive, else fall back to default
+    {
+        float jd_from_cfg = settings_.getFloat("jd_epoch");  // returns -1 if absent
+        jd_epoch_ = (jd_from_cfg > 0.0f) ? static_cast<double>(jd_from_cfg)
+                                           : JD_EPOCH_DEFAULT;
+    }
+
     sma_perturb_distrib       = std::uniform_real_distribution<double>(-sma_perturb_max, sma_perturb_max);
     true_anomaly_distrib      = std::uniform_real_distribution<double>(0.0, 2.0 * M_PI);
     dist_init_offset_distrib  = std::uniform_real_distribution<double>(
@@ -269,7 +276,7 @@ bool MultiAgentOGE::isPursuerIntercepted() const
 Eigen::Vector3d MultiAgentOGE::computeSunPosition() const
 {
     Eigen::Vector3d pos_sun;
-    solar_position(JD_EPOCH + current_time / 86400.0, pos_sun);
+    solar_position(jd_epoch_ + current_time / 86400.0, pos_sun);
     return pos_sun;
 }
 
@@ -333,13 +340,36 @@ void MultiAgentOGE::getObservations(std::vector<Eigen::VectorXd>& observations) 
             ++k;
         }
 
-        // Solar angle w.r.t. HVT: angle between (HVT→Sun) and (HVT→self).
-        // When i==0 the self IS the HVT, so the direction is undefined — use 0.
-        double solar_angle = (i == 0) ? 0.0 : solar_illumination_angle(
-            pos_sun,
-            agents_states[0].r_j2000,   // HVT position (evader)
-            agents_states[i].r_j2000    // self position
-        );
+        // Solar angle computation depends on agent role:
+        //   evader[0]  (HVT)         : undefined — use 0
+        //   evader[1+] (interceptor) : vertex = first pursuer (Blue),
+        //                              angle between (Blue→Sun) and (Blue→self)
+        //   pursuer    (Blue Recon)  : vertex = HVT,
+        //                              angle between (HVT→Sun) and (HVT→self)
+        double solar_angle;
+        if (i == 0)
+        {
+            solar_angle = 0.0;
+        }
+        else if (i >= 1 && i < num_evaders)
+        {
+            // Interceptor/Escort: Blue (first pursuer) as vertex
+            int blue_idx = num_evaders;  // first pursuer
+            solar_angle = solar_illumination_angle(
+                pos_sun,
+                agents_states[blue_idx].r_j2000,  // Blue position (vertex)
+                agents_states[i].r_j2000           // self position
+            );
+        }
+        else
+        {
+            // Pursuer (Blue Recon): HVT as vertex
+            solar_angle = solar_illumination_angle(
+                pos_sun,
+                agents_states[0].r_j2000,   // HVT position (vertex)
+                agents_states[i].r_j2000    // self position
+            );
+        }
 
         bool is_evader = (i < num_evaders);
         double dv_init = is_evader ? dv_init_evader : dv_init_pursuer;

@@ -7,15 +7,6 @@ NB_MODULE(_oge_py_ma, m)
 {
     m.doc() = "Multi-agent orbital pursuit-evasion environment (C++ backend)";
 
-    // Expose SatState in this module as well so Python can build state dicts
-    // without importing _oge_py first (nanobind deduplicates the type).
-    nb::class_<oge::SatState>(m, "SatState")
-        .def(nb::init<>())
-        .def_rw("r_j2000",    &oge::SatState::r_j2000)
-        .def_rw("v_j2000",    &oge::SatState::v_j2000)
-        .def_rw("dv_remain",  &oge::SatState::dv_remain)
-        .def_rw("is_alive",   &oge::SatState::is_alive);
-
     nb::class_<oge::MultiAgentPythonInterface>(m, "MultiAgentOGEEnv")
         .def(nb::init<nb::dict, int, int, double>(),
              "cfg"_a,

@@ -1,6 +1,28 @@
 ==== 编译 ====
 cd /home/star/Downloads/oge_2.0/OGE && rm -rf build && mkdir build && cd build && cmake .. && make -j$(nproc) && cd .. && pip install .
 
+==== 护卫侦照可视化 ====
+python scripts/visualize_escort_recon.py
+
+==== 护卫侦照训练（Phase 1：蓝色侦照星 RL，红护卫被动）====
+python scripts/train_blue_recon_phase1.py --timesteps 10000000 --name blue_recon_phase1
+
+# 续训
+python scripts/train_blue_recon_phase1.py \
+    --checkpoint runs/blue_recon_phase1/blue_recon_phase1/checkpoints/best_agent.pt \
+    --name blue_recon_phase1_v2
+
+==== 护卫侦照训练（Phase 2：红护卫 RL，蓝侦照加载 checkpoint）====
+python scripts/train_red_escort_phase2.py \
+    --blue-checkpoint runs/April_7_blue_recon_phase1/blue_recon_phase1/checkpoints/best_agent.pt \
+    --timesteps 8000000 --name Apr_7_red_escort_phase2
+
+# 续训
+python scripts/train_red_escort_phase2.py \
+    --blue-checkpoint runs/April_7_blue_recon_phase1/blue_recon_phase1/checkpoints/best_agent.pt \
+    --checkpoint runs/red_escort_phase2/red_escort_phase2/checkpoints/best_agent.pt \
+    --name red_escort_phase2_v2
+
 ==== 1v1 训练 ====
 # 侦察任务
 python scripts/train.py --task recon --name March_31th_recon_v1

@@ -12,7 +12,10 @@
 //     [6+7*j : 6+7*j+3]      rel_pos in own LVLH (km)
 //     [6+7*j+3 : 6+7*j+6]    rel_vel in own LVLH (m/s)
 //     [6+7*j+6]               dist(i,j) / 20km
-//   [6+7*(N-1)+0]            solar_angle w.r.t. HVT (rad)
+//   [6+7*(N-1)+0]            solar_angle (rad):
+//                              evader[0]  = 0
+//                              evader[1+] = angle at first-pursuer vertex: (Blue→Sun) ^ (Blue→self)
+//                              pursuer    = angle at HVT vertex:           (HVT→Sun)  ^ (HVT→self)
 //   [6+7*(N-1)+1]            dv_remain (km/s)
 //   [6+7*(N-1)+2]            time_progress [0,1]
 //   [6+7*(N-1)+3]            dv_ratio (dv_remain / dv_init)
@@ -115,8 +118,10 @@ private:
     std::uniform_real_distribution<double>   dist_init_offset_distrib;
     std::uniform_int_distribution<int>       ta_lead_distrib;
 
-    // JD epoch — same as OrbitalGameEnvironment (2027-09-01 16:00 UTC)
-    static constexpr double JD_EPOCH = 2461650.166667;
+    // JD epoch — default: 2027-09-01 16:00 UTC (same as OrbitalGameEnvironment).
+    // Can be overridden via settings key "jd_epoch" (double, positive value).
+    static constexpr double JD_EPOCH_DEFAULT = 2461650.166667;
+    double jd_epoch_;   // runtime value, initialised in constructor
 };
 
 } // namespace oge

@@ -37,6 +37,7 @@ namespace oge
         floatSettings["sma_perturb_max"] = 10.0f;
         floatSettings["dist_init_offset_min"] = 1.0f;
         floatSettings["dist_init_offset_max"] = 20.0f;
+        floatSettings["jd_epoch"] = -1.0f;  // -1 = use C++ default
 
         floatSettings["reward_time_weight"] = -0.01; // panalty
         floatSettings["reward_formation_weight"] = 0.04;
@@ -77,6 +78,7 @@ namespace oge
         setInternal("sma_perturb_max", toString(floatSettings["sma_perturb_max"]), -1, true);
         setInternal("dist_init_offset_min", toString(floatSettings["dist_init_offset_min"]), -1, true);
         setInternal("dist_init_offset_max", toString(floatSettings["dist_init_offset_max"]), -1, true);
+        setInternal("jd_epoch", toString(floatSettings["jd_epoch"]), -1, true);
 
         setInternal("reward_time_weight", toString(floatSettings["reward_time_weight"]), -1, true);
         setInternal("reward_formation_weight", toString(floatSettings["reward_formation_weight"]), -1, true);

@@ -395,7 +395,91 @@ Scenario: 2 pursuers vs 2 evaders (1 HVT + 1 interceptors)
 
 ---
 
-## 6. 文件说明
+## 6. 护卫侦照博弈训练（三星场景）
+
+### 6.1 场景说明
+
+| 角色 | C++ 内部名 | 行为 |
+|------|-----------|------|
+| 红色高价值星 (Red HV) | `blue_sat_0` | 固定轨道，无机动 |
+| 红色护卫星 (Red Escort) | `blue_sat_1` | Phase 1 被动；Phase 2 为 RL |
+| 蓝色侦照星 (Blue Recon) | `red_sat_0` | Phase 1 为 RL；Phase 2 加载策略 |
+
+侦照成功条件：`dist(Blue, RedHV) ≤ 20 km` 且 `solar_angle ≤ 60°`，持续累计 ≥ 200 s。
+
+### 6.2 相关文件
+
+| 文件 | 用途 |
+|------|------|
+| `configs/escort_recon_cfg.py` | 三星场景轨道根数、燃料、时间步等配置 |
+| `modules/env_wrapper_escort_recon.py` | 护卫侦照 skrl Wrapper（支持 `train_blue` 切换） |
+| `scripts/visualize_escort_recon.py` | 三星初始位置可视化（输入六根数） |
+| `scripts/train_blue_recon_phase1.py` | Phase 1：蓝色侦照星 RL，红护卫被动 |
+
+### 6.3 训练流程
+
+**Phase 1：训练蓝色侦照星**
+
+```bash
+# 首次训练
+python scripts/train_blue_recon_phase1.py --timesteps 10000000 --name blue_recon_phase1
+
+# 续训
+python scripts/train_blue_recon_phase1.py \
+    --checkpoint runs/blue_recon_phase1/blue_recon_phase1/checkpoints/best_agent.pt \
+    --name blue_recon_phase1_v2
+```
+
+**Phase 2：训练红色护卫星**（待 Phase 1 完成后）
+
+```bash
+# 使用 Phase 1 最优 checkpoint 作为蓝方对手
+python scripts/train_red_escort_phase2.py \
+    --blue-checkpoint runs/blue_recon_phase1/blue_recon_phase1/checkpoints/best_agent.pt \
+    --timesteps 10000000 --name red_escort_phase2
+```
+
+### 6.4 可视化
+
+```bash
+# 查看三星初始相对位置（默认参数）
+python scripts/visualize_escort_recon.py
+
+# 自定义轨道根数
+python scripts/visualize_escort_recon.py \
+    --hv  42169.502913 0 0.002287 1.592853 0 0.419833 \
+    --esc 42169.502913 0 0.002287 1.592853 0 0.421133 \
+    --blue 42169.502913 0 0.002287 1.592829 0 0.424435
+```
+
+### 6.5 观测向量（17 维，蓝侦照星与红护卫星共用）
+
+```
+[0:3]   rel_pos → 目标 / 200 km  (LVLH)
+[3:6]   rel_vel → 目标 × 10      (m/s)
+[6]     dist_to_target / 20 km
+[7]     solar_angle / π
+[8:11]  sun_dir in HV LVLH
+[11]    dv_ratio
+[12]    time_progress
+[13]    dist_to_threat / 20 km
+[14:17] rel_pos → 威胁 / 200 km  (LVLH)
+```
+
+> 蓝侦照星：目标=RedHV，威胁=RedEsc；红护卫星：目标=BlueRecon，威胁=RedHV。
+
+### 6.6 重要提示
+
+C++ 修改（`multi_agent_oge.h/.cpp` 新增运行时 `jd_epoch_`）需重新编译后才能使用：
+
+```bash
+cd /home/star/Downloads/oge_2.0/OGE
+rm -rf build && mkdir build && cd build && cmake .. && make -j$(nproc) && cd .. && pip install .
+```
+
+---
+
+## 7. 文件说明
 
 | 文件 | 用途 |
 |------|------|
@@ -406,6 +490,10 @@ Scenario: 2 pursuers vs 2 evaders (1 HVT + 1 interceptors)
 | `modules/env_wrapper_ma.py` | 多智能体 skrl Wrapper（参数共享 IPPO） |
 | `modules/networks.py` | 1v1 Policy/Value 网络 |
 | `modules/ma_networks.py` | 多智能体 MAPursuerPolicy/Value 网络 |
+| `configs/escort_recon_cfg.py` | 护卫侦照场景配置（轨道根数、燃料、JD epoch） |
+| `modules/env_wrapper_escort_recon.py` | 护卫侦照 skrl Wrapper |
+| `scripts/visualize_escort_recon.py` | 三星初始位置可视化 |
+| `scripts/train_blue_recon_phase1.py` | 护卫侦照 Phase 1 训练（蓝侦照 RL） |
 | `scripts/train.py` | 1v1 训练入口 |
 | `scripts/train_multi_agent.py` | 多智能体训练入口 |
 | `scripts/fine_tune.py` | 固定初始化微调 |
