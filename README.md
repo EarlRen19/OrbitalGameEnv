@@ -413,8 +413,11 @@ Scenario: 2 pursuers vs 2 evaders (1 HVT + 1 interceptors)
 |------|------|
 | `configs/escort_recon_cfg.py` | 三星场景轨道根数、燃料、时间步等配置 |
 | `modules/env_wrapper_escort_recon.py` | 护卫侦照 skrl Wrapper（支持 `train_blue` 切换） |
-| `scripts/visualize_escort_recon.py` | 三星初始位置可视化（输入六根数） |
 | `scripts/train_blue_recon_phase1.py` | Phase 1：蓝色侦照星 RL，红护卫被动 |
+| `scripts/train_red_escort_phase2.py` | Phase 2：红护卫 RL，蓝侦照加载 checkpoint |
+| `scripts/evaluate_escort_recon.py` | 固定参数单场景验证（逐步打印 + 成功/失败判定） |
+| `scripts/visualize_escort_recon_init.py` | 三星初始相对位置静态可视化（输入六根数） |
+| `scripts/visualize_escort_recon.py` | 全程轨迹动画（GIF + 静态汇总 PNG） |
 
 ### 6.3 训练流程
 
@@ -430,29 +433,78 @@ python scripts/train_blue_recon_phase1.py \
     --name blue_recon_phase1_v2
 ```
 
+> 当前最优 checkpoint：`runs/April_7_blue_recon_phase1/blue_recon_phase1/checkpoints/best_agent.pt`
+
 **Phase 2：训练红色护卫星**（待 Phase 1 完成后）
 
 ```bash
 # 使用 Phase 1 最优 checkpoint 作为蓝方对手
 python scripts/train_red_escort_phase2.py \
-    --blue-checkpoint runs/blue_recon_phase1/blue_recon_phase1/checkpoints/best_agent.pt \
+    --blue-checkpoint runs/April_7_blue_recon_phase1/blue_recon_phase1/checkpoints/best_agent.pt \
     --timesteps 10000000 --name red_escort_phase2
+
+# 续训
+python scripts/train_red_escort_phase2.py \
+    --blue-checkpoint runs/April_7_blue_recon_phase1/blue_recon_phase1/checkpoints/best_agent.pt \
+    --checkpoint runs/red_escort_phase2/red_escort_phase2/checkpoints/best_agent.pt \
+    --name red_escort_phase2_v2
 ```
 
-### 6.4 可视化
+> 当前最优 checkpoint：`runs/Apr_7_red_escort_phase2/Apr_7_red_escort_phase2/checkpoints/best_agent.pt`
+
+### 6.4 固定参数验证
+
+在以下固定初始六根数下验证护卫侦照场景结果（BJT 2027-09-01 20:00）：
+
+| 卫星 | a (km) | e | i (rad) | RAAN (rad) | ω (rad) | M (rad) |
+|------|--------|---|---------|-----------|---------|---------|
+| Red HV  | 42169.502913 | 0 | 0.002287 | 1.592853 | 0 | 0.419833 |
+| Red Esc | 42169.502913 | 0 | 0.002287 | 1.592853 | 0 | 0.421133 |
+| Blue    | 42169.502913 | 0 | 0.002287 | 1.592829 | 0 | 0.424435 |
 
 ```bash
-# 查看三星初始相对位置（默认参数）
-python scripts/visualize_escort_recon.py
-
-# 自定义轨道根数
-python scripts/visualize_escort_recon.py \
-    --hv  42169.502913 0 0.002287 1.592853 0 0.419833 \
-    --esc 42169.502913 0 0.002287 1.592853 0 0.421133 \
-    --blue 42169.502913 0 0.002287 1.592829 0 0.424435
+python scripts/evaluate_escort_recon.py
 ```
 
-### 6.5 观测向量（17 维，蓝侦照星与红护卫星共用）
+示例输出（2026-04-07 结果）：
+
+```
+ Step  SimTime(s)  Esc→Blue(km)  SolAng(°)  EscRecon(s)  BlueRecon(s)  EscDV(km/s)  BlueDV(km/s)  Blue→HV(km)
+   10        2000        109.45     130.71          0.0           0.0      0.00727       0.00765       182.29
+   20        4000         64.73     129.00          0.0           0.0      0.00683       0.00565       161.84
+   30        6000         16.55     126.81          0.0           0.0      0.00659       0.00419       136.59
+   35        7000          8.38      50.80        400.0           0.0      0.00638       0.00337       122.40
+
+  [SUCCESS] 红色护卫星成功侦照蓝色星！
+```
+
+### 6.5 可视化
+
+**初始相对位置静态图**（查看三星初始构型，无需 checkpoint）：
+
+```bash
+# 默认参数
+python scripts/visualize_escort_recon_init.py
+
+# 自定义轨道根数
+python scripts/visualize_escort_recon_init.py \
+    --red-hv  42169.502913,0,0.002287,1.592853,0,0.419833 \
+    --red-esc 42169.502913,0,0.002287,1.592853,0,0.421133 \
+    --blue    42169.502913,0,0.002287,1.592829,0,0.424435 \
+    --bjt "2027-09-01 20:00"
+```
+
+**全程轨迹动画**（加载双方 checkpoint，运行一局并生成 GIF）：
+
+```bash
+python scripts/visualize_escort_recon.py
+```
+
+输出至 `visualizations/blue_recon_redHV__escort_counterrecon/`：
+- `trajectory.gif` — 36 帧动画（左：以红HV为中心的XY相对轨迹 + 太阳锥/侦照圈；右：距离/太阳角/侦照进度时序曲线）
+- `summary.png`   — 静态4子图汇总（轨迹、距离、太阳角、侦照进度+燃料）
+
+### 6.6 观测向量（17 维，蓝侦照星与红护卫星共用）
 
 ```
 [0:3]   rel_pos → 目标 / 200 km  (LVLH)
@@ -468,7 +520,7 @@ python scripts/visualize_escort_recon.py \
 
 > 蓝侦照星：目标=RedHV，威胁=RedEsc；红护卫星：目标=BlueRecon，威胁=RedHV。
 
-### 6.6 重要提示
+### 6.7 重要提示
 
 C++ 修改（`multi_agent_oge.h/.cpp` 新增运行时 `jd_epoch_`）需重新编译后才能使用：
 
@@ -492,8 +544,11 @@ rm -rf build && mkdir build && cd build && cmake .. && make -j$(nproc) && cd .. 
 | `modules/ma_networks.py` | 多智能体 MAPursuerPolicy/Value 网络 |
 | `configs/escort_recon_cfg.py` | 护卫侦照场景配置（轨道根数、燃料、JD epoch） |
 | `modules/env_wrapper_escort_recon.py` | 护卫侦照 skrl Wrapper |
-| `scripts/visualize_escort_recon.py` | 三星初始位置可视化 |
 | `scripts/train_blue_recon_phase1.py` | 护卫侦照 Phase 1 训练（蓝侦照 RL） |
+| `scripts/train_red_escort_phase2.py` | 护卫侦照 Phase 2 训练（红护卫 RL） |
+| `scripts/evaluate_escort_recon.py` | 护卫侦照固定参数单场景验证 |
+| `scripts/visualize_escort_recon_init.py` | 三星初始相对位置静态可视化 |
+| `scripts/visualize_escort_recon.py` | 三星全程轨迹动画（GIF + PNG） |
 | `scripts/train.py` | 1v1 训练入口 |
 | `scripts/train_multi_agent.py` | 多智能体训练入口 |
 | `scripts/fine_tune.py` | 固定初始化微调 |

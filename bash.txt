@@ -1,9 +1,6 @@
 ==== 编译 ====
 cd /home/star/Downloads/oge_2.0/OGE && rm -rf build && mkdir build && cd build && cmake .. && make -j$(nproc) && cd .. && pip install .
 
-==== 护卫侦照可视化 ====
-python scripts/visualize_escort_recon.py
-
 ==== 护卫侦照训练（Phase 1：蓝色侦照星 RL，红护卫被动）====
 python scripts/train_blue_recon_phase1.py --timesteps 10000000 --name blue_recon_phase1
 
@@ -11,6 +8,9 @@ python scripts/train_blue_recon_phase1.py --timesteps 10000000 --name blue_recon
 python scripts/train_blue_recon_phase1.py \
     --checkpoint runs/blue_recon_phase1/blue_recon_phase1/checkpoints/best_agent.pt \
     --name blue_recon_phase1_v2
+
+# 当前最优 ckpt（Phase 1）
+# runs/April_7_blue_recon_phase1/blue_recon_phase1/checkpoints/best_agent.pt
 
 ==== 护卫侦照训练（Phase 2：红护卫 RL，蓝侦照加载 checkpoint）====
 python scripts/train_red_escort_phase2.py \
@@ -22,6 +22,31 @@ python scripts/train_red_escort_phase2.py \
     --blue-checkpoint runs/April_7_blue_recon_phase1/blue_recon_phase1/checkpoints/best_agent.pt \
     --checkpoint runs/red_escort_phase2/red_escort_phase2/checkpoints/best_agent.pt \
     --name red_escort_phase2_v2
+
+# 当前最优 ckpt（Phase 2）
+# runs/Apr_7_red_escort_phase2/Apr_7_red_escort_phase2/checkpoints/best_agent.pt
+
+==== 护卫侦照固定参数验证 ====
+# 固定初始六根数：BJT 2027-09-01 20:00
+# RedHV  [42169.502913, 0, 0.002287, 1.592853, 0, 0.419833]
+# RedEsc [42169.502913, 0, 0.002287, 1.592853, 0, 0.421133]
+# Blue   [42169.502913, 0, 0.002287, 1.592829, 0, 0.424435]
+python scripts/evaluate_escort_recon.py
+
+==== 护卫侦照可视化 ====
+# 初始相对位置静态图（无需 checkpoint）
+python scripts/visualize_escort_recon_init.py
+
+# 自定义轨道根数
+python scripts/visualize_escort_recon_init.py \
+    --red-hv  42169.502913,0,0.002287,1.592853,0,0.419833 \
+    --red-esc 42169.502913,0,0.002287,1.592853,0,0.421133 \
+    --blue    42169.502913,0,0.002287,1.592829,0,0.424435 \
+    --bjt "2027-09-01 20:00"
+
+# 全程轨迹动画 GIF（加载双方 checkpoint 跑一局）
+# 输出：visualizations/blue_recon_redHV__escort_counterrecon/trajectory.gif + summary.png
+python scripts/visualize_escort_recon.py
 
 ==== 1v1 训练 ====
 # 侦察任务
@@ -73,3 +98,7 @@ python scripts/train_multi_agent.py --evaders 4 --pursuers 4 --threat --timestep
 # 续训
 python scripts/train_multi_agent.py --evaders 4 --pursuers 4 --threat \
     --checkpoint runs/ma_4v4/ma_4v4/checkpoints/best_agent.pt --name ma_4v4_v2
+
+
+#删掉pt文件
+find /home/star/Downloads/oge_2.0/OGE/runs/Apr_7_red_escort_phase2/Apr_7_red_escort_phase2/checkpoints -maxdepth 1 -type f -name "*0*.pt" -delete
