@@ -24,6 +24,10 @@ NB_MODULE(_oge_py, m)
           "pos_sun_j2000"_a, "pos_evader_j2000"_a, "pos_chaser_j2000"_a,
           "Calculate solar illumination angle between Sun->Evader and Evader->Chaser vectors");
 
+    m.def("jamming_angle", &oge::jamming_angle,
+          "pos_target_j2000"_a, "pos_jammer_j2000"_a,
+          "Calculate jamming angle: angle between Target->Earth and Target->Jammer vectors (rad)");
+
     nb::class_<oge::SatState>(m, "SatState")
         .def(nb::init<>())
         .def_rw("r_j2000", &oge::SatState::r_j2000)

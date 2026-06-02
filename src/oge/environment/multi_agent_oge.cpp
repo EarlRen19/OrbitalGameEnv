@@ -58,6 +58,9 @@ MultiAgentOGE::MultiAgentOGE(
 
     agents_states.resize(num_agents);
 
+    // Default task assignments (all RECON, target=0, threat=-1)
+    task_assignments_.resize(num_agents);
+
     // Seed RNG
     int seed = settings_.getInt("random_seed", true);
     _rng.seed(static_cast<unsigned>(seed));
@@ -391,6 +394,125 @@ std::unordered_map<std::string, SatState> MultiAgentOGE::getSatStates() const
     for (int i = 0; i < num_agents; ++i)
         result[agent_ids[i]] = agents_states[i];
     return result;
+}
+
+// ── Task assignment ───────────────────────────────────────────────────────────
+
+void MultiAgentOGE::setTaskAssignment(const std::vector<AgentTask>& assignments)
+{
+    if (static_cast<int>(assignments.size()) != num_agents)
+        throw std::invalid_argument(
+            "setTaskAssignment: assignments.size() must equal num_agents");
+    task_assignments_ = assignments;
+}
+
+// ── Task-specific 17-dim observations ────────────────────────────────────────
+//
+// Layout (TASK_OBS_SIZE = 17):
+//   [0:3]   rel_pos to target in self LVLH / 200km
+//   [3:6]   rel_vel to target in self LVLH * 10  (m/s)
+//   [6]     dist_to_target / 20km
+//   [7]     task angle / pi:
+//             STRIKE/RECON → solar_illumination_angle(sun, target, self) / pi
+//             JAM          → jamming_angle(target, self) / pi
+//             OPERATE      → |rel_vel| * 10 (m/s), no angle semantics
+//   [8:11]  auxiliary direction (unit vector) in target LVLH:
+//             STRIKE/RECON → sun direction in target LVLH
+//             JAM          → target-to-earth unit vector in target LVLH
+//             OPERATE      → zeros
+//   [11]    dv_ratio (dv_remain / dv_init)
+//   [12]    time_progress [0,1]
+//   [13]    dist_to_threat / 20km  (-1 if threat_idx < 0)
+//   [14:17] rel_pos_to_threat in self LVLH / 200km  (zeros if no threat)
+
+void MultiAgentOGE::getTaskObservations(std::vector<Eigen::VectorXd>& observations) const
+{
+    observations.resize(num_agents);
+
+    const Eigen::Vector3d pos_sun = computeSunPosition();
+    const double time_progress    = current_time / terminal_time;
+
+    for (int i = 0; i < num_agents; ++i)
+    {
+        observations[i] = Eigen::VectorXd::Zero(TASK_OBS_SIZE);
+
+        const AgentTask& task   = task_assignments_[i];
+        const int tgt           = task.target_idx;
+        const int thr           = task.threat_idx;
+        const SatState& self_s  = agents_states[i];
+        const SatState& tgt_s   = agents_states[tgt];
+
+        bool is_evader = (i < num_evaders);
+        double dv_init = is_evader ? dv_init_evader : dv_init_pursuer;
+
+        // ── [0:7] relative state to target ───────────────────────────────────
+        Eigen::Vector3d r_tgt_lvlh, v_tgt_lvlh;
+        RV_J20002LVLH(
+            self_s.r_j2000, self_s.v_j2000,
+            tgt_s.r_j2000,  tgt_s.v_j2000,
+            r_tgt_lvlh, v_tgt_lvlh
+        );
+        observations[i].segment<3>(0) = r_tgt_lvlh / 200.0;
+        observations[i].segment<3>(3) = v_tgt_lvlh * 10.0 * 1000.0; // km/s→m/s, *10
+        observations[i](6)            = r_tgt_lvlh.norm() / 20.0;
+
+        // ── [7] task angle + [8:11] auxiliary direction ───────────────────────
+        Eigen::Matrix3d dcm_tgt;
+        DCM_J2000_to_LVLH(tgt_s.r_j2000, tgt_s.v_j2000, dcm_tgt);
+
+        switch (task.task_type)
+        {
+        case TaskType::STRIKE:
+        case TaskType::RECON:
+        {
+            // solar_illumination_angle: vertex = target, chaser = self
+            double angle = solar_illumination_angle(
+                pos_sun, tgt_s.r_j2000, self_s.r_j2000);
+            observations[i](7) = angle / M_PI;
+            // sun direction in target LVLH
+            observations[i].segment<3>(8) =
+                dcm_tgt * (pos_sun - tgt_s.r_j2000).normalized();
+            break;
+        }
+        case TaskType::JAM:
+        {
+            // jamming_angle: vertex = target, jammer = self
+            double angle = jamming_angle(tgt_s.r_j2000, self_s.r_j2000);
+            observations[i](7) = angle / M_PI;
+            // target-to-earth direction in target LVLH
+            observations[i].segment<3>(8) =
+                dcm_tgt * (-tgt_s.r_j2000).normalized();
+            break;
+        }
+        case TaskType::OPERATE:
+        {
+            // relative speed (m/s) * 10, no angle
+            double rel_speed_ms = v_tgt_lvlh.norm() * 1000.0; // km/s → m/s
+            observations[i](7) = rel_speed_ms * 10.0;
+            // [8:11] = zeros (already zero-initialised)
+            break;
+        }
+        }
+
+        // ── [11:13] fuel + time ───────────────────────────────────────────────
+        observations[i](11) = self_s.dv_remain / dv_init;
+        observations[i](12) = time_progress;
+
+        // ── [13:17] threat ────────────────────────────────────────────────────
+        if (thr >= 0 && thr < num_agents)
+        {
+            const SatState& thr_s = agents_states[thr];
+            Eigen::Vector3d r_thr_lvlh, v_thr_lvlh;
+            RV_J20002LVLH(
+                self_s.r_j2000, self_s.v_j2000,
+                thr_s.r_j2000,  thr_s.v_j2000,
+                r_thr_lvlh, v_thr_lvlh
+            );
+            observations[i](13)            = r_thr_lvlh.norm() / 20.0;
+            observations[i].segment<3>(14) = r_thr_lvlh / 200.0;
+        }
+        // else [13:17] remain zero
+    }
 }
 
 } // namespace oge

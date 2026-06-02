@@ -25,6 +25,15 @@ NB_MODULE(_oge_py_ma, m)
         .def("act",                &oge::MultiAgentPythonInterface::act,
              "actions"_a)
         .def("get_observations",   &oge::MultiAgentPythonInterface::getObservations)
+        .def("set_task_assignment",&oge::MultiAgentPythonInterface::setTaskAssignment,
+             "assignments"_a,
+             "Set per-agent task assignments. Each element is a dict with keys:\n"
+             "  task_type  (int): 0=STRIKE, 1=RECON, 2=JAM, 3=OPERATE\n"
+             "  target_idx (int): global agent index of task target\n"
+             "  threat_idx (int): global agent index of main threat (-1 if none)")
+        .def("get_task_observations", &oge::MultiAgentPythonInterface::getTaskObservations,
+             "Returns numpy array shape (num_agents, 17) with task-specific observations.\n"
+             "Requires set_task_assignment to have been called first.")
 
         .def("is_terminal",            &oge::MultiAgentPythonInterface::isTerminal)
         .def("is_truncated",           &oge::MultiAgentPythonInterface::isTruncated)
@@ -118,6 +127,40 @@ nb::ndarray<nb::numpy, double> MultiAgentPythonInterface::getObservations() cons
         [](void* p) noexcept { delete[] static_cast<double*>(p); });
     const size_t shape[2] = {static_cast<size_t>(n),
                               static_cast<size_t>(obs)};
+    return {data, 2, shape, owner};
+}
+
+// ── get_task_observations ─────────────────────────────────────────────────────
+
+void MultiAgentPythonInterface::setTaskAssignment(const nb::list& assignments)
+{
+    const int n = static_cast<int>(assignments.size());
+    std::vector<oge::AgentTask> tasks(n);
+    for (int i = 0; i < n; ++i)
+    {
+        nb::dict d = nb::cast<nb::dict>(assignments[i]);
+        tasks[i].task_type  = static_cast<oge::TaskType>(nb::cast<int>(d["task_type"]));
+        tasks[i].target_idx = nb::cast<int>(d["target_idx"]);
+        tasks[i].threat_idx = nb::cast<int>(d["threat_idx"]);
+    }
+    env->setTaskAssignment(tasks);
+}
+
+nb::ndarray<nb::numpy, double> MultiAgentPythonInterface::getTaskObservations() const
+{
+    std::vector<Eigen::VectorXd> obs_vec;
+    env->getTaskObservations(obs_vec);
+
+    const int n   = env->getNumAgents();
+    const int obs = oge::MultiAgentOGE::TASK_OBS_SIZE;
+    auto* data = new double[static_cast<size_t>(n) * static_cast<size_t>(obs)];
+
+    for (int i = 0; i < n; ++i)
+        std::memcpy(data + i * obs, obs_vec[i].data(), obs * sizeof(double));
+
+    nb::capsule owner(data,
+        [](void* p) noexcept { delete[] static_cast<double*>(p); });
+    const size_t shape[2] = {static_cast<size_t>(n), static_cast<size_t>(obs)};
     return {data, 2, shape, owner};
 }
 

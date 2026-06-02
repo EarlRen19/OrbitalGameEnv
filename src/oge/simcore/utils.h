@@ -201,6 +201,18 @@ namespace oge
         const Eigen::Vector3d& pos_evader_j2000,
         const Eigen::Vector3d& pos_chaser_j2000);
 
+    /**
+     * 计算干扰角：目标与地心连线 和 目标到干扰星连线 之间的夹角（弧度）。
+     * 干扰角定义：以目标卫星为顶点，"目标→地心"方向 与 "目标→干扰星"方向 的夹角。
+     * 角度越小表示干扰星越接近目标的天底方向，干扰效果越好。
+     * @param[in] pos_target_j2000   目标卫星在 J2000 坐标系下的位置 (km)
+     * @param[in] pos_jammer_j2000   干扰星在 J2000 坐标系下的位置 (km)
+     * @return 干扰角 (rad)，范围 [0, π]
+     */
+    double jamming_angle(
+        const Eigen::Vector3d& pos_target_j2000,
+        const Eigen::Vector3d& pos_jammer_j2000);
+
     std::chrono::sys_time<std::chrono::milliseconds> UTC_SysTime(
         int y,
         unsigned int m,

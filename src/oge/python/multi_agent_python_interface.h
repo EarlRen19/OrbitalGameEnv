@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <sstream>
 #include <cstring>
 
@@ -53,8 +54,20 @@ public:
     /** actions: numpy array shape (num_agents, 3), LVLH delta-v km/s */
     void act(const nb::ndarray<nb::numpy, const double>& actions);
 
-    /** Returns numpy array shape (num_agents, obs_size) */
+    /** Returns numpy array shape (num_agents, obs_size) — full observations */
     nb::ndarray<nb::numpy, double> getObservations() const;
+
+    /**
+     * Set per-agent task assignments from Python.
+     * @param assignments  list of dicts, each with keys:
+     *   "task_type"  : int  (0=STRIKE, 1=RECON, 2=JAM, 3=OPERATE)
+     *   "target_idx" : int  (global agent index of task target)
+     *   "threat_idx" : int  (global agent index of main threat, -1 if none)
+     */
+    void setTaskAssignment(const nb::list& assignments);
+
+    /** Returns numpy array shape (num_agents, 17) — task-specific observations */
+    nb::ndarray<nb::numpy, double> getTaskObservations() const;
 
     bool isTerminal()          const { return env->isTerminal(); }
     bool isTruncated()         const { return env->isTruncated(); }

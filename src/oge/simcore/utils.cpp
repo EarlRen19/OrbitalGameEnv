@@ -360,4 +360,16 @@ namespace oge
         return std::acos(std::clamp(to_sun.dot(to_chaser), -1.0, 1.0));
     }
 
+    double jamming_angle(
+        const Eigen::Vector3d& pos_target_j2000,
+        const Eigen::Vector3d& pos_jammer_j2000)
+    {
+        // 目标→地心 方向（即 -pos_target 的单位向量，地心在原点）
+        const Eigen::Vector3d to_earth = (-pos_target_j2000).normalized();
+        // 目标→干扰星 方向
+        const Eigen::Vector3d to_jammer = (pos_jammer_j2000 - pos_target_j2000).normalized();
+        // 夹角，clamp防止数值误差导致acos越界
+        return std::acos(std::clamp(to_earth.dot(to_jammer), -1.0, 1.0));
+    }
+
 }
