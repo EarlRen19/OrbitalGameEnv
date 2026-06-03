@@ -245,6 +245,10 @@ def run_episode(device):
 
         step += 1
 
+        # 全部成功后提前退出
+        if all(traj["success"]):
+            break
+
     for k in ["r_hv"] + [f"r_esc_{i}" for i in range(6)] + [f"r_blue_{i}" for i in range(6)]:
         if k == "r_hv":
             traj[k] = np.array(traj[k])

@@ -205,6 +205,9 @@ def run_episode(oge, red_policies, red_preps, blue_policies, blue_preps,
         raw = np.asarray(oge.get_task_observations(), dtype=np.float32)
 
         for k in range(6):
+            if success[k]:
+                continue
+
             gi  = k + 1
             obs = raw[gi]
             crit = ESC_SUCCESS[k]
@@ -232,12 +235,15 @@ def run_episode(oge, red_policies, red_preps, blue_policies, blue_preps,
                 if in_z:
                     cur_zone_s[k] += timestep
                     max_zone_s[k]  = max(max_zone_s[k], cur_zone_s[k])
-                    if max_zone_s[k] >= crit["duration_s"]:
+                    if cur_zone_s[k] >= crit["duration_s"]:
                         success[k] = True
                 else:
                     cur_zone_s[k] = 0.0
 
             last_dist[k] = dist_km
+
+        if all(success):
+            break
 
     return [dict(
         success        = success[k],
