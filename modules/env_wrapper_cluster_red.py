@@ -387,14 +387,25 @@ class _RedEscBaseWrapper(Wrapper):
         # 距离引导
         reward += 2.0 * (self._last_dist - dist_km)
 
-        # 角度引导 + 速度漏斗（25km 内）
-        if dist_km <= 25.0:
-            if angle_deg <= self.SUCCESS_ANGLE_DEG:
-                reward += 2.0 * (1.0 - angle_deg / self.SUCCESS_ANGLE_DEG)
-            rel_vel_ms = float(np.linalg.norm(obs[3:6]))
-            target_vel_ms = 1.0 + (dist_km / 25.0) * 4.0
-            if rel_vel_ms > target_vel_ms:
-                reward -= 0.2 * (rel_vel_ms - target_vel_ms)
+        # 角度引导（根据任务类型区分）
+        if self.TASK_TYPE == TASK_JAM:
+            # JAM：两段式引导（照搬蓝方 JAM 成功经验）
+            if dist_km <= self.SUCCESS_DIST_KM:  # 20km
+                if dist_km > 5.0:
+                    # 20~5km：轻度压角度，参考上限 90°
+                    reward += 2.0 * (1.0 - angle_deg / 90.0)
+                else:
+                    # 5km 内：强力压角度到 5° 以内
+                    reward += 5.0 * max(0.0, 1.0 - angle_deg / self.SUCCESS_ANGLE_DEG)
+        else:
+            # STRIKE/RECON：原逻辑，25km 内角度+速度引导
+            if dist_km <= 25.0:
+                if angle_deg <= self.SUCCESS_ANGLE_DEG:
+                    reward += 2.0 * (1.0 - angle_deg / self.SUCCESS_ANGLE_DEG)
+                rel_vel_ms = float(np.linalg.norm(obs[3:6]))
+                target_vel_ms = 1.0 + (dist_km / 25.0) * 4.0
+                if rel_vel_ms > target_vel_ms:
+                    reward -= 0.2 * (rel_vel_ms - target_vel_ms)
 
         reward -= 0.01 * action_ms
         self._last_dist = dist_km
