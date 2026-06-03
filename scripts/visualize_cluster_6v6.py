@@ -85,8 +85,18 @@ ESC_SUCCESS = [
 TIMESTEP = 200.0
 C_RED_ESC = "red"
 C_BLUE = "steelblue"
-C_HV = "darkred"
+C_HV = "red"
 C_SUCCESS = "limegreen"
+
+# 每颗红护卫的任务元信息（用于 PNG 子图）
+ESC_INFO = [
+    dict(name="R1", task="Strike",  target="B1", dist_thresh=20.0, angle_thresh=90.0, dur=200.0),
+    dict(name="R2", task="Strike",  target="B2", dist_thresh=20.0, angle_thresh=90.0, dur=200.0),
+    dict(name="R3", task="Jam",     target="B3", dist_thresh=20.0, angle_thresh=5.0,  dur=600.0),
+    dict(name="R4", task="Recon",   target="B4", dist_thresh=20.0, angle_thresh=60.0, dur=200.0),
+    dict(name="R5", task="Recon",   target="B5", dist_thresh=20.0, angle_thresh=60.0, dur=200.0),
+    dict(name="R6", task="Operate", target="B6", dist_thresh=2.0,  angle_thresh=None, dur=200.0),
+]
 
 
 # ── 策略加载 ──────────────────────────────────────────────────────────────────
@@ -181,6 +191,11 @@ def run_episode(device):
         "r_blue": [[] for _ in range(6)],
         "success": [False] * 6,
         "success_step": [-1] * 6,
+        # per-agent metrics for PNG
+        "dist":      [[] for _ in range(6)],
+        "angle":     [[] for _ in range(6)],
+        "fuel":      [[] for _ in range(6)],
+        "in_zone":   [[] for _ in range(6)],
     }
 
     acc_time = [0.0] * 6
@@ -212,6 +227,23 @@ def run_episode(device):
                 blue_policies[k], blue_preps[k], raw[gi], blue_bufs[k], 0.002)
 
         oge.act(combined)
+
+        # 记录每颗护卫的指标
+        for k in range(6):
+            gi = k + 1
+            obs = raw[gi]
+            dist_km = float(obs[6]) * 20.0
+            angle_deg = np.rad2deg(float(obs[7]) * np.pi)
+            fuel = float(obs[11])
+            crit = ESC_SUCCESS[k]
+            if crit["task"] == TASK_OPERATE:
+                iz = dist_km <= crit["dist_km"]
+            else:
+                iz = dist_km <= crit["dist_km"] and angle_deg <= crit["angle_deg"]
+            traj["dist"][k].append(dist_km)
+            traj["angle"][k].append(angle_deg)
+            traj["fuel"][k].append(fuel)
+            traj["in_zone"][k].append(iz)
 
         # 判定成功
         for k in range(6):
@@ -268,13 +300,12 @@ def run_episode(device):
 # ── GIF 生成 ──────────────────────────────────────────────────────────────────
 
 def create_gif(traj, times, outcome, out_path):
-    n_frames = len(times) - 1  # 最后一帧没有新数据，跳过
+    n_frames = len(times) - 1
     r_hv = traj["r_hv"]
 
     fig, ax = plt.subplots(figsize=(14, 14), facecolor="white")
 
-    # 固定坐标范围：200km（以 HV 为中心）
-    span = 200.0
+    span = 100.0
     lim = (-span, span)
 
     def update(frame):
@@ -284,31 +315,28 @@ def create_gif(traj, times, outcome, out_path):
         t_now = times[frame]
         center = r_hv[frame, :2]
 
-        # HV
-        ax.scatter(0, 0, c=C_HV, s=280, marker="*", zorder=8,
-                   edgecolors="black", lw=1.2, label="Red HV")
+        # HV — 红色五角星
+        ax.scatter(0, 0, c=C_HV, s=320, marker="*", zorder=8,
+                   edgecolors="darkred", lw=1.2, label="Red HV")
 
         # 红护卫 + 蓝星
         for k in range(6):
             if traj["success"][k] and frame > traj["success_step"][k]:
-                continue  # 成功后隐藏
+                continue
 
-            rel_esc = traj["r_esc"][k][frame, :2] - center
+            rel_esc  = traj["r_esc"][k][frame, :2]  - center
             rel_blue = traj["r_blue"][k][frame, :2] - center
 
-            # 红护卫
             ax.scatter(rel_esc[0], rel_esc[1], c=C_RED_ESC, s=150, marker="^",
                        edgecolors="black", lw=1.0, zorder=7)
-            ax.text(rel_esc[0], rel_esc[1] + 8, f"R{k+1}", fontsize=10,
+            ax.text(rel_esc[0], rel_esc[1] + 4, f"R{k+1}", fontsize=11,
                     ha="center", va="bottom", color=C_RED_ESC, fontweight="bold")
 
-            # 蓝星
             ax.scatter(rel_blue[0], rel_blue[1], c=C_BLUE, s=150, marker="s",
                        edgecolors="black", lw=1.0, zorder=7)
-            ax.text(rel_blue[0], rel_blue[1] - 8, f"B{k+1}", fontsize=10,
+            ax.text(rel_blue[0], rel_blue[1] - 4, f"B{k+1}", fontsize=11,
                     ha="center", va="top", color=C_BLUE, fontweight="bold")
 
-            # 连线
             ax.plot([rel_esc[0], rel_blue[0]], [rel_esc[1], rel_blue[1]],
                     color="gray", lw=0.8, ls=":", alpha=0.4, zorder=4)
 
@@ -316,48 +344,139 @@ def create_gif(traj, times, outcome, out_path):
         if frame > 0:
             alphas = np.linspace(0.2, 0.7, frame + 1)
             for k in range(6):
-                if traj["success"][k] and frame > traj["success_step"][k]:
-                    fade_end = traj["success_step"][k]
-                else:
-                    fade_end = frame
-
+                fade_end = traj["success_step"][k] if (traj["success"][k] and frame > traj["success_step"][k]) else frame
                 for i in range(fade_end):
                     a = alphas[i]
-                    rel_esc_i = traj["r_esc"][k][i:i+2, :2] - r_hv[i:i+2, :2]
+                    rel_esc_i  = traj["r_esc"][k][i:i+2, :2]  - r_hv[i:i+2, :2]
                     rel_blue_i = traj["r_blue"][k][i:i+2, :2] - r_hv[i:i+2, :2]
-                    ax.plot(rel_esc_i[:, 0], rel_esc_i[:, 1],
-                            color=C_RED_ESC, lw=1.2, alpha=a, zorder=3)
-                    ax.plot(rel_blue_i[:, 0], rel_blue_i[:, 1],
-                            color=C_BLUE, lw=1.2, alpha=a, zorder=3)
+                    ax.plot(rel_esc_i[:, 0],  rel_esc_i[:, 1],  color=C_RED_ESC, lw=1.2, alpha=a, zorder=3)
+                    ax.plot(rel_blue_i[:, 0], rel_blue_i[:, 1], color=C_BLUE,    lw=1.2, alpha=a, zorder=3)
 
         ax.set_xlim(lim); ax.set_ylim(lim)
         ax.set_aspect("equal")
-        ax.set_xlabel("ΔX (km) — relative to Red HV", fontsize=11)
-        ax.set_ylabel("ΔY (km) — relative to Red HV", fontsize=11)
+        ax.set_xlabel("ΔX (km) — relative to Red HV", fontsize=15, fontweight="bold")
+        ax.set_ylabel("ΔY (km) — relative to Red HV", fontsize=15, fontweight="bold")
+        ax.tick_params(axis="both", labelsize=12)
         ax.grid(True, alpha=0.35, color="gray", ls="--")
 
-        success_str = ", ".join([f"R{k+1}" for k in range(6) if traj["success"][k]])
+        # 只列出当前帧为止已成功的护卫
+        done_so_far = [f"R{k+1}" for k in range(6)
+                       if traj["success"][k] and traj["success_step"][k] <= frame]
+        success_str = ", ".join(done_so_far) if done_so_far else "—"
         ax.set_title(
             f"Cluster 6v6  |  Step {frame}/{n_frames-1}  |  t = {t_now/3600:.2f} h\n"
-            f"Success: {success_str if success_str else 'None'}",
+            f"Success: {success_str}",
             fontsize=13, fontweight="bold", pad=10,
         )
 
         leg = [
             Line2D([0], [0], marker="*", color="none", markerfacecolor=C_HV,
-                   markeredgecolor="black", markersize=14, label="Red HV"),
+                   markeredgecolor="darkred", markersize=16, label="Red HV"),
             Line2D([0], [0], marker="^", color="none", markerfacecolor=C_RED_ESC,
-                   markeredgecolor="black", markersize=11, label="Red Escort"),
+                   markeredgecolor="black", markersize=12, label="Red Escort"),
             Line2D([0], [0], marker="s", color="none", markerfacecolor=C_BLUE,
-                   markeredgecolor="black", markersize=11, label="Blue"),
+                   markeredgecolor="black", markersize=12, label="Blue"),
         ]
-        ax.legend(handles=leg, loc="upper right", framealpha=0.9, fontsize=10)
+        ax.legend(handles=leg, loc="upper right", framealpha=0.9, fontsize=11)
 
     fig.suptitle(f"Cluster 6v6 — {outcome}", fontsize=14, fontweight="bold")
     anim = FuncAnimation(fig, update, frames=n_frames, interval=400)
     anim.save(out_path, writer=PillowWriter(fps=2.5))
     plt.close(fig)
     print(f"GIF saved: {out_path}")
+
+
+# ── 6-panel PNG ───────────────────────────────────────────────────────────────
+
+TASK_LABELS = {
+    TASK_STRIKE:  "Strike",
+    TASK_JAM:     "Jam",
+    TASK_RECON:   "Recon",
+    TASK_OPERATE: "Operate",
+}
+
+def create_summary_png(traj, times, outcome, out_path):
+    """6 子图，每颗红护卫一张：距离、角度、燃料、相空间。"""
+    n_steps = len(traj["dist"][0])
+    steps   = np.arange(n_steps)
+    t_h     = steps * TIMESTEP / 3600.0
+
+    fig, axes = plt.subplots(3, 2, figsize=(16, 18), facecolor="white")
+    fig.suptitle(f"Cluster 6v6 — Red Escort Task Analysis\n{outcome}",
+                 fontsize=16, fontweight="bold", y=0.98)
+
+    for k in range(6):
+        ax = axes[k // 2][k % 2]
+        info  = ESC_INFO[k]
+        crit  = ESC_SUCCESS[k]
+        dist  = np.array(traj["dist"][k])
+        angle = np.array(traj["angle"][k])
+        fuel  = np.array(traj["fuel"][k]) * 100.0
+        iz    = np.array(traj["in_zone"][k])
+
+        # ── 主轴：距离 ──
+        color_dist = "tomato"
+        ax.plot(t_h, dist, color=color_dist, lw=2.0, label=f"Distance (km)")
+        ax.axhline(crit["dist_km"], color=color_dist, ls="--", lw=1.2, alpha=0.7,
+                   label=f"Dist thresh ({crit['dist_km']:.0f} km)")
+        ax.fill_between(t_h, 0, crit["dist_km"], alpha=0.08, color=color_dist)
+        ax.set_ylabel("Distance (km)", fontsize=13, fontweight="bold", color=color_dist)
+        ax.tick_params(axis="y", labelcolor=color_dist, labelsize=11)
+        ax.tick_params(axis="x", labelsize=11)
+        ax.set_ylim(bottom=0)
+
+        # ── 右轴：角度（Operate 任务用燃料代替）──
+        ax2 = ax.twinx()
+        if crit["task"] != TASK_OPERATE:
+            color_ang = "royalblue"
+            ax2.plot(t_h, angle, color=color_ang, lw=2.0, ls="-.", label=f"Angle (°)")
+            ax2.axhline(crit["angle_deg"], color=color_ang, ls=":", lw=1.2, alpha=0.7,
+                        label=f"Angle thresh ({crit['angle_deg']:.0f}°)")
+            ax2.set_ylabel("Solar / Task Angle (°)", fontsize=13,
+                           fontweight="bold", color=color_ang)
+            ax2.tick_params(axis="y", labelcolor=color_ang, labelsize=11)
+            ax2.set_ylim(0, 185)
+        else:
+            color_fuel = "purple"
+            ax2.plot(t_h, fuel, color=color_fuel, lw=2.0, ls="-.", label="Fuel (%)")
+            ax2.set_ylabel("Remaining Fuel (%)", fontsize=13,
+                           fontweight="bold", color=color_fuel)
+            ax2.tick_params(axis="y", labelcolor=color_fuel, labelsize=11)
+            ax2.set_ylim(0, 105)
+
+        # ── in-zone 区域着色 ──
+        in_z_arr = iz.astype(float)
+        ax.fill_between(t_h, 0, ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else 100,
+                        where=in_z_arr > 0, alpha=0.15, color="limegreen",
+                        label="In Zone", step="mid")
+
+        # ── 成功标记 ──
+        if traj["success"][k]:
+            ss = traj["success_step"][k]
+            t_suc = ss * TIMESTEP / 3600.0
+            ax.axvline(t_suc, color="limegreen", lw=2.0, ls="--",
+                       label=f"Success @ {t_suc:.2f}h")
+
+        ax.set_xlabel("Time (h)", fontsize=13, fontweight="bold")
+        task_name = TASK_LABELS[crit["task"]]
+        ax.set_title(
+            f"{info['name']} → {info['target']}  [{task_name}]  "
+            f"{'✓ Success' if traj['success'][k] else '✗ Failed'}",
+            fontsize=13, fontweight="bold",
+            color="green" if traj["success"][k] else "red",
+        )
+        ax.grid(True, alpha=0.3, ls="--")
+
+        # 合并图例
+        lines1, labs1 = ax.get_legend_handles_labels()
+        lines2, labs2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labs1 + labs2,
+                  loc="upper right", fontsize=9, framealpha=0.85)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    plt.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"PNG saved: {out_path}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -373,6 +492,10 @@ def main():
     gif_path = os.path.join(OUT_DIR, "trajectory.gif")
     print("Creating trajectory.gif ...")
     create_gif(traj, times, outcome, gif_path)
+
+    png_path = os.path.join(OUT_DIR, "escort_analysis.png")
+    print("Creating escort_analysis.png ...")
+    create_summary_png(traj, times, outcome, png_path)
 
     print(f"\nOutput saved to:\n  {OUT_DIR}")
 
